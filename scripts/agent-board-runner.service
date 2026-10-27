@@ -1,0 +1,16 @@
+[Unit]
+Description=AOA-TaskBoard Autonomous Agent Runner (agy)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/private/agent_board
+ExecStart=/usr/bin/python3 %h/private/agent_board/scripts/runner.py --agent agy --interval 3
+Restart=always
+RestartSec=5
+# 繼承使用者的 PATH 與環境設定
+Environment=PATH=%h/.gemini/antigravity-cli/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
