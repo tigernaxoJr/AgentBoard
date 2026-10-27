@@ -2,7 +2,7 @@ pub mod stream;
 
 use crate::features::tasks::{AddTaskLogDto, Task, TaskService};
 use crate::server::BoardEvent;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use stream::Parsed;
 use tokio::sync::broadcast;
@@ -109,6 +109,194 @@ pub async fn ingest_output(
                 let _ = TaskService::add_usage(pool, task_id, &usage).await;
             }
         }
+    }
+}
+
+/// 檢查或升級 Agent CLI 的回傳結果
+#[derive(Debug, Serialize)]
+pub struct CliUpdateResult {
+    pub agent_id: String,
+    pub installed: bool,
+    pub current_version: Option<String>,
+    pub output: String,
+    pub success: bool,
+}
+
+pub async fn check_or_update_cli(agent_id: &str) -> Result<CliUpdateResult, String> {
+    if !AGENTS.iter().any(|a| a.id == agent_id) {
+        return Err(format!("不支援的 Agent: {agent_id}"));
+    }
+
+    // 1. 取得目前版本
+    let ver_out = tokio::process::Command::new(agent_id)
+        .arg("--version")
+        .output()
+        .await;
+
+    let (installed, current_version) = match ver_out {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (true, Some(ver))
+        }
+        _ => (false, None),
+    };
+
+    if !installed {
+        return Ok(CliUpdateResult {
+            agent_id: agent_id.to_string(),
+            installed: false,
+            current_version: None,
+            output: format!("找不到 {agent_id} 執行檔，請確認已安裝至 PATH"),
+            success: false,
+        });
+    }
+
+    // 2. 執行 update 指令（agy update 或 claude update）
+    let update_out = tokio::process::Command::new(agent_id)
+        .arg("update")
+        .output()
+        .await
+        .map_err(|e| format!("執行 {agent_id} update 失敗: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&update_out.stdout);
+    let stderr = String::from_utf8_lossy(&update_out.stderr);
+    let combined = format!("{stdout}\n{stderr}").trim().to_string();
+
+    Ok(CliUpdateResult {
+        agent_id: agent_id.to_string(),
+        installed: true,
+        current_version,
+        output: combined,
+        success: update_out.status.success(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeUsageInfo {
+    pub session_percent: Option<f64>,
+    pub session_resets_at: Option<String>,
+    pub weekly_percent: Option<f64>,
+    pub weekly_resets_at: Option<String>,
+    pub spend_used: Option<f64>,
+    pub spend_limit: Option<f64>,
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgyUsageInfo {
+    pub today_input_tokens: i64,
+    pub today_output_tokens: i64,
+    pub today_total_tokens: i64,
+    pub today_active_sessions: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentUsageSummary {
+    pub claude: Option<ClaudeUsageInfo>,
+    pub agy: Option<AgyUsageInfo>,
+}
+
+/// 零 Token 消耗查詢各 Agent CLI 的本地用量與額度狀況
+pub async fn get_cli_usage_stats() -> AgentUsageSummary {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+
+    // 1. Claude: 讀取 ~/.claude.json 中的 cachedUsageUtilization（CLI 自帶快取）
+    let claude_info = {
+        let claude_json_path = std::path::Path::new(&home).join(".claude.json");
+        if let Ok(content) = std::fs::read_to_string(claude_json_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                let cached = &v["cachedUsageUtilization"];
+                let util = &cached["utilization"];
+                let five_h = &util["five_hour"];
+                let seven_d = &util["seven_day"];
+                let spend = &util["spend"];
+
+                let spend_used = spend["used"]["amount_minor"].as_f64().map(|amt| {
+                    let exp = spend["used"]["exponent"].as_f64().unwrap_or(2.0);
+                    amt / 10f64.powf(exp)
+                });
+                let spend_limit = spend["limit"]["amount_minor"].as_f64().map(|amt| {
+                    let exp = spend["limit"]["exponent"].as_f64().unwrap_or(2.0);
+                    amt / 10f64.powf(exp)
+                });
+                let currency = spend["used"]["currency"].as_str().unwrap_or("USD").to_string();
+
+                Some(ClaudeUsageInfo {
+                    session_percent: five_h["utilization"].as_f64(),
+                    session_resets_at: five_h["resets_at"].as_str().map(|s| s.to_string()),
+                    weekly_percent: seven_d["utilization"].as_f64(),
+                    weekly_resets_at: seven_d["resets_at"].as_str().map(|s| s.to_string()),
+                    spend_used,
+                    spend_limit,
+                    currency,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    // 2. Agy: 彙整 ~/.gemini/antigravity-cli/brain 今日產生之 transcript 本機 Token 計量
+    let agy_info = {
+        let brain_dir = std::path::Path::new(&home).join(".gemini/antigravity-cli/brain");
+        let today_prefix = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut in_tokens = 0i64;
+        let mut out_tokens = 0i64;
+        let mut active_sessions = 0i64;
+
+        if let Ok(entries) = std::fs::read_dir(brain_dir) {
+            for entry in entries.flatten() {
+                let transcript_path = entry.path().join(".system_generated/logs/transcript.jsonl");
+                if !transcript_path.is_file() {
+                    continue;
+                }
+
+                if let Ok(metadata) = transcript_path.metadata() {
+                    if let Ok(mtime) = metadata.modified() {
+                        let mtime_date = chrono::DateTime::<chrono::Local>::from(mtime).format("%Y-%m-%d").to_string();
+                        if mtime_date != today_prefix {
+                            continue;
+                        }
+                    }
+                }
+
+                if let Ok(file) = std::fs::File::open(&transcript_path) {
+                    use std::io::{BufRead, BufReader};
+                    let reader = BufReader::new(file);
+                    let mut session_counted = false;
+                    for line in reader.lines().flatten() {
+                        if line.contains("input_tokens") {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&line) {
+                                if let Some(created) = obj["created_at"].as_str() {
+                                    if created.starts_with(&today_prefix) {
+                                        in_tokens += obj["input_tokens"].as_i64().unwrap_or(0);
+                                        out_tokens += obj["output_tokens"].as_i64().unwrap_or(0);
+                                        if !session_counted {
+                                            active_sessions += 1;
+                                            session_counted = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(AgyUsageInfo {
+            today_input_tokens: in_tokens,
+            today_output_tokens: out_tokens,
+            today_total_tokens: in_tokens + out_tokens,
+            today_active_sessions: active_sessions,
+        })
+    };
+
+    AgentUsageSummary {
+        claude: claude_info,
+        agy: agy_info,
     }
 }
 

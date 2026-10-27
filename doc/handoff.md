@@ -22,6 +22,9 @@
 - [x] **模型下拉選單與前置勾選**：建立任務彈窗支援直接勾選已有任務，並依 Agent 自動帶出可用模型下拉選單。
 - [x] **任務快速複製 (Duplicate)**：抽屜一鍵複製當前任務內容並打開建立彈窗。
 - [x] **Running 即時執行碼表**：看板卡片與抽屜即時顯示 running 任務的動態累計秒數與呼吸燈。
+- [x] **Agent CLI 更新檢查 (CLI Updater)**：後端 `POST /api/agents/{id}/update` 整合 `agent --version` 與 `agent update`，前端提供「🚀 CLI 更新」彈窗支援一鍵檢查與更新 `agy` 與 `claude` CLI。
+- [x] **Agent 本地額度與用量監控 (Zero-Token CLI Usage)**：後端 `GET /api/agents/usage` 直接讀取本機 CLI 快取與日誌，前端側邊欄即時呈現 Claude 5h/7d 額度條、已用金額與 Agy 今日 Session/Token 計量，查詢過程完全不消耗任何 LLM Token。
+- [x] **Tauri System Tray 系統匣與生圖圖示**：透過生圖模型產製 2x2 Spritesheet，切割出全新 App Icon 與三種 System Tray 狀態圖示（`tray-idle`、`tray-active`、`tray-alert`），並完成 Rust System Tray 托盤選單與點擊視窗最小化/還原控制。
 
 ## 待辦功能（依建議優先序）
 

@@ -6,6 +6,8 @@ use serde::Serialize;
 use server::{BoardEvent, ServerState, start_background_workers, start_http_server};
 use std::sync::Arc;
 use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tokio::sync::broadcast;
 
 #[derive(Clone, Serialize)]
@@ -95,6 +97,50 @@ pub fn run() {
                 base_url: format!("http://127.0.0.1:{}", port),
                 token: token.clone(),
             });
+
+            // 建立 System Tray
+            let show_i = MenuItem::with_id(app, "show", "顯示視窗 (Show)", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "結束 (Quit)", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+
+            let _tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("Agent Board")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let is_visible = window.is_visible().unwrap_or(false);
+                            if is_visible {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
 
             // 初始化 SQLite 資料庫與後端服務（預設埠號 18833）
             tauri::async_runtime::spawn(async move {

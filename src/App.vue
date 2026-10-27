@@ -8,6 +8,7 @@ import ApiGuideModal from "./components/ApiGuideModal.vue";
 import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
 import StatsModal from "./components/StatsModal.vue";
 import TemplateModal from "./components/TemplateModal.vue";
+import AgentCliUpdateModal from "./components/AgentCliUpdateModal.vue";
 import Icon from "./components/Icon.vue";
 import DependencyGraph from "./components/DependencyGraph.vue";
 import { cycleTheme, themePref } from "./composables/useTheme";
@@ -49,12 +50,16 @@ const {
   createTemplate,
   deleteTemplate,
   fetchStats,
+  updateAgentCli,
+  agentUsage,
+  fetchAgentUsage,
 } = useTasks();
 
 const showCreateModal = ref(false);
 const showApiGuide = ref(false);
 const showStatsModal = ref(false);
 const showTemplateModal = ref(false);
+const showCliUpdateModal = ref(false);
 const selectedTemplateForCreate = ref<TaskTemplate | null>(null);
 const runTarget = ref<Task | null>(null);
 // 看板 / 依賴關係圖
@@ -272,6 +277,59 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
 
         <div>
+          <div class="px-2 mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-ink-3">
+            <span>Agent 額度與用量</span>
+            <button @click="fetchAgentUsage" class="hover:text-ink text-[10px] transition-colors" title="重新整理本機用量快取 (不耗 Token)">🔄</button>
+          </div>
+          <div class="px-2 flex flex-col gap-2.5 text-xs">
+            <!-- Claude Usage -->
+            <div v-if="agentUsage?.claude" class="p-2 rounded-lg bg-raised/50 border border-line flex flex-col gap-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-ink flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+                  @claude (5h)
+                </span>
+                <span class="font-mono text-[11px] font-semibold text-ink">
+                  {{ agentUsage.claude.session_percent ?? 0 }}%
+                </span>
+              </div>
+              <div class="h-1 rounded-full bg-raised overflow-hidden">
+                <div
+                  :class="['h-full rounded-full transition-[width] duration-300', (agentUsage.claude.session_percent ?? 0) > 80 ? 'bg-rose-500' : (agentUsage.claude.session_percent ?? 0) > 50 ? 'bg-amber-500' : 'bg-emerald-500']"
+                  :style="{ width: `${agentUsage.claude.session_percent ?? 0}%` }"
+                ></div>
+              </div>
+
+              <!-- Weekly & Spend -->
+              <div class="flex items-center justify-between text-[10px] text-ink-3 pt-0.5">
+                <span>7 天: {{ agentUsage.claude.weekly_percent ?? 0 }}%</span>
+                <span v-if="agentUsage.claude.spend_used != null">
+                  ${{ agentUsage.claude.spend_used.toFixed(2) }}
+                  <span v-if="agentUsage.claude.spend_limit">/ ${{ agentUsage.claude.spend_limit.toFixed(0) }}</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Agy Usage -->
+            <div v-if="agentUsage?.agy" class="p-2 rounded-lg bg-raised/50 border border-line flex flex-col gap-1">
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-ink flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
+                  @agy 今日用量
+                </span>
+                <span class="font-mono text-[11px] text-ink-2">
+                  {{ (agentUsage.agy.today_total_tokens / 1000).toFixed(1) }}k
+                </span>
+              </div>
+              <div class="text-[10px] text-ink-3 flex justify-between">
+                <span>會話: {{ agentUsage.agy.today_active_sessions }} 次</span>
+                <span>In: {{ (agentUsage.agy.today_input_tokens / 1000).toFixed(0) }}k / Out: {{ (agentUsage.agy.today_output_tokens / 1000).toFixed(0) }}k</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
           <div class="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-3">Runners</div>
           <div
             v-for="r in runnerRows"
@@ -370,6 +428,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         >
           <span>📑</span>
           <span>範本庫</span>
+        </button>
+
+        <button
+          @click="showCliUpdateModal = true"
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+          title="檢查並更新 CLI (agy / claude)"
+        >
+          <span>🚀</span>
+          <span>CLI 更新</span>
         </button>
 
         <div class="ml-auto relative w-64 min-w-28 shrink">
@@ -531,6 +598,14 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <ApiGuideModal
       v-if="showApiGuide"
       @close="showApiGuide = false"
+    />
+
+    <!-- Agent CLI Update Modal -->
+    <AgentCliUpdateModal
+      v-if="showCliUpdateModal"
+      :agents="agents"
+      :update-agent-cli="updateAgentCli"
+      @close="showCliUpdateModal = false"
     />
   </div>
 </template>

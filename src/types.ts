@@ -68,6 +68,14 @@ export interface AgentDef {
   models: string[];
 }
 
+export interface CliUpdateResult {
+  agent_id: string;
+  installed: boolean;
+  current_version: string | null;
+  output: string;
+  success: boolean;
+}
+
 /** 執行設定；欄位省略 = 保留原值，model / workdir 傳空字串 = 清除 */
 export interface RunOptions {
   agent_id: string;
@@ -160,4 +168,26 @@ export interface RunnerStatus {
   last_seen: string;
   current_task: string | null;
   online: boolean;
+}
+
+export interface ClaudeUsageInfo {
+  session_percent?: number | null;
+  session_resets_at?: string | null;
+  weekly_percent?: number | null;
+  weekly_resets_at?: string | null;
+  spend_used?: number | null;
+  spend_limit?: number | null;
+  currency: string;
+}
+
+export interface AgyUsageInfo {
+  today_input_tokens: number;
+  today_output_tokens: number;
+  today_total_tokens: number;
+  today_active_sessions: number;
+}
+
+export interface AgentUsageSummary {
+  claude?: ClaudeUsageInfo | null;
+  agy?: AgyUsageInfo | null;
 }

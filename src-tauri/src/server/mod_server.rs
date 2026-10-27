@@ -65,6 +65,8 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/worktree/merge", post(worktree_merge))
         .route("/api/tasks/{id}/worktree/discard", post(worktree_discard))
         .route("/api/agents", get(list_agents))
+        .route("/api/agents/usage", get(get_agent_usage))
+        .route("/api/agents/{id}/update", post(update_agent_cli))
         .route("/api/runners", get(list_runners))
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
@@ -422,6 +424,19 @@ async fn worktree_discard(
 
 async fn list_agents() -> impl IntoResponse {
     Json(AGENTS)
+}
+
+async fn get_agent_usage() -> impl IntoResponse {
+    Json(agents::get_cli_usage_stats().await)
+}
+
+async fn update_agent_cli(
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    match agents::check_or_update_cli(&id).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+    }
 }
 
 async fn list_runners(State(state): State<ServerState>) -> impl IntoResponse {

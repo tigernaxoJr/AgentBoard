@@ -61,6 +61,8 @@
      * `GET /api/stats`：統計面板資料彙整 API（按 Agent、工作目錄、日期）。
      * `/api/templates`：任務範本 CRUD API。
      * `GET /api/tasks/{id}/worktree/diff`：隔離執行的完整 Git Diff API。
+     * `POST /api/agents/{id}/update`：檢查並更新 Agent CLI（支援 `agy`、`claude`），回傳舊版本、新版本與執行日誌輸出。
+     * `GET /api/agents/usage`：零 Token 消耗查詢各 Agent CLI 本地用量與額度（Claude 5h/7d 限額快取、Agy 今日 Tokens 累計）。
   6. 加入背景定時檢查：
      * 自動偵測 `last_heartbeat_at` 逾時的任務，將其恢復為 `queued` 或標記 `failed`。
   7. 加入 **SSE (`GET /api/events`)** 讓後端狀態變更與日誌即時推播。

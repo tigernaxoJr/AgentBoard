@@ -1,7 +1,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
-import type { AgentDef, Artifact, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
+import type { AgentDef, AgentUsageSummary, Artifact, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -97,6 +97,22 @@ export function useTasks() {
   const fetchAgents = async () => {
     const res = await api("/api/agents");
     if (res.ok) agents.value = (await res.json()) as AgentDef[];
+  };
+
+  const updateAgentCli = async (agentId: string): Promise<CliUpdateResult> => {
+    const res = await api(`/api/agents/${agentId}/update`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()) as CliUpdateResult;
+  };
+
+  const agentUsage = ref<AgentUsageSummary | null>(null);
+  const fetchAgentUsage = async () => {
+    try {
+      const res = await api("/api/agents/usage");
+      if (res.ok) agentUsage.value = (await res.json()) as AgentUsageSummary;
+    } catch (e) {
+      console.error("Failed to fetch agent usage", e);
+    }
   };
 
   // 方案 B 的 Runner 在線狀態；離線是「太久沒出現」，後端不會主動通知，所以定期重抓
@@ -259,11 +275,15 @@ export function useTasks() {
     }
   };
 
+  let usageTimer: ReturnType<typeof setInterval> | undefined;
+
   onMounted(() => {
     fetchTasks();
     fetchAgents();
+    fetchAgentUsage();
     initSSE();
     runnerTimer = setInterval(fetchRunners, 15_000);
+    usageTimer = setInterval(fetchAgentUsage, 30_000);
   });
 
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -274,6 +294,7 @@ export function useTasks() {
 
   onUnmounted(() => {
     clearInterval(runnerTimer);
+    clearInterval(usageTimer);
     if (eventSource) {
       eventSource.close();
     }
@@ -311,6 +332,7 @@ export function useTasks() {
     createTask,
     selectTask,
     agents,
+    updateAgentCli,
     runners,
     spawnTask,
     dispatchTask,
@@ -329,5 +351,7 @@ export function useTasks() {
     createTemplate,
     deleteTemplate,
     fetchStats,
+    agentUsage,
+    fetchAgentUsage,
   };
 }
