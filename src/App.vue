@@ -41,6 +41,7 @@ const {
   deleteTask,
   followupTask,
   activeTaskArtifacts,
+  fetchArtifactImage,
   fetchWorktree,
   fetchWorktreeDiff,
   mergeWorktree,
@@ -534,9 +535,11 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <!-- Right Drawer for Live Logs & Details -->
         <TaskDetailDrawer
           :task="selectedTask"
+          :answered="!!selectedTask && tasks.some((t) => t.parent_task_id === selectedTask!.id && t.prompt !== '/compact')"
           :logs="activeTaskLogs"
           @close="selectedTaskId = null"
           :artifacts="activeTaskArtifacts"
+          :load-image="fetchArtifactImage"
           :load-worktree="fetchWorktree"
           :load-worktree-diff="fetchWorktreeDiff"
           @merge-worktree="handleMergeWorktree"

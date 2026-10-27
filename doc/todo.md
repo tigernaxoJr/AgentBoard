@@ -8,6 +8,7 @@
   目前 `failed` 是終點，重跑只能重建任務，依賴它的任務也一起卡死。
   做法：`POST /api/tasks/{id}/requeue` 把任務（以及因連鎖失敗的下游任務）改回 `queued`、`attempts` 歸零；抽屜加按鈕。
 
+- [x] **成果圖片預覽**：抽屜成果區對 png/jpg/gif/webp 顯示縮圖、點擊放大（`GET /api/artifacts/{id}/file`，限任務目錄內）。限制：成果仍需 Agent 透過 MCP `add_artifact` 或 REST 登記，無頭模式下不會自動偵測產出檔。
 - [x] **顯示成果（artifacts）**
   後端已有 `POST/GET /api/tasks/{id}/artifacts`，UI 尚未顯示。
   做法：抽屜新增「成果」區塊，列出檔案路徑與摘要；用 `tauri-plugin-opener` 一鍵開啟檔案或工作目錄。
@@ -48,7 +49,7 @@
 
 - [x] **壓縮對話（compact）**
   任務詳情的「壓縮對話」按鈕，對該任務的工作階段執行 `/compact`，讓之後的追加指示更省 token。
-  實作備註：等同送出內容為 `/compact` 的追加指示。claude 實測有效（37.5k → 8.5k token）；agy 會執行 checkpoint 步驟但不輸出文字，效果無法量化。
+  實作備註：等同送出內容為 `/compact` 的追加指示。claude 實測有效（37.5k → 8.5k token）；agy 會執行 checkpoint 步驟但不輸出文字，效果無法量化。壓縮任務完成後（且沒有 worktree）會從看板隱藏；已有非壓縮的追加指示時，原任務的提問卡片不再顯示。
 
 ## 已知限制（暫不處理）
 

@@ -113,7 +113,7 @@ python3 scripts/runner.py --agent agy --interval 3
 * `followup_task`：追加後續指示（接續 session）
   * Agent 若在結果結尾附上 ```` ```ask ```` 區塊（問題與選項），UI 會顯示成按鈕供點選回答；任務詳情也有「壓縮對話」（`/compact`）按鈕
 * `requeue_task` / `cancel_task`：重試或取消
-* `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案
+* `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案（圖片會在任務抽屜顯示縮圖，點擊放大；檔案須在任務工作目錄內）
 * `list_agents` / `list_runners` / `send_message`：查詢可用 Agent、Runner 與留訊息
 
 ### 配置方式範例

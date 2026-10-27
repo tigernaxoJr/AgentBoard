@@ -81,6 +81,7 @@ pub fn create_router(state: ServerState) -> Router {
             "/api/tasks/{id}/artifacts",
             post(create_artifact).get(list_artifacts),
         )
+        .route("/api/artifacts/{id}/file", get(artifact_file))
         // Messages
         .route("/api/messages", post(send_message).get(get_messages))
         // Stats
@@ -601,6 +602,35 @@ async fn list_artifacts(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(artifacts))
+}
+
+async fn artifact_file(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let internal = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
+    let artifact = ArtifactService::get(&state.pool, &id)
+        .await
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "artifact not found".to_string()))?;
+    let task = TaskService::get_task(&state.pool, &artifact.task_id)
+        .await
+        .map_err(|e| internal(e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "task not found".to_string()))?;
+    let path = crate::features::artifacts::resolve_file(
+        &artifact.file_path,
+        task.workdir.as_deref(),
+        task.worktree_path.as_deref(),
+    )
+    .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| internal(e.to_string()))?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, crate::features::artifacts::content_type(&path)),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    ))
 }
 
 async fn send_message(

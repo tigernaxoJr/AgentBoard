@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Artifact, Task, TaskLog, WorktreeStatus } from "../types";
 import { STATUS_META, agentMeta, formatCost, formatDuration, formatTokens, parseAsk, relativeTime } from "../ui";
@@ -9,8 +9,11 @@ import { MAX_LOGS } from "../composables/useTasks";
 
 const props = defineProps<{
   task: Task | null;
+  /** 已有人針對這個任務追加過指示（提問已回答） */
+  answered?: boolean;
   logs: TaskLog[];
   artifacts: Artifact[];
+  loadImage: (artifactId: string) => Promise<string | null>;
   loadWorktree: (taskId: string) => Promise<WorktreeStatus>;
   loadWorktreeDiff?: (taskId: string, path?: string) => Promise<string>;
 }>();
@@ -72,6 +75,28 @@ const copyPrompt = async () => {
   copied.value = true;
   setTimeout(() => (copied.value = false), 2000);
 };
+
+// 圖片成果：載入成 blob URL 顯示縮圖，點擊放大；換任務或卸載時釋放
+const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
+const images = ref<Record<string, string>>({});
+const zoomed = ref<string | null>(null);
+const freeImages = () => {
+  Object.values(images.value).forEach((u) => URL.revokeObjectURL(u));
+  images.value = {};
+};
+watch(
+  () => props.artifacts,
+  async (list) => {
+    for (const a of list) {
+      if (!IMAGE_RE.test(a.file_path) || images.value[a.id]) continue;
+      const url = await props.loadImage(a.id);
+      if (url) images.value[a.id] = url;
+    }
+  },
+  { immediate: true, deep: true },
+);
+watch(() => props.task?.id, freeImages);
+onUnmounted(freeImages);
 
 // 成果路徑若是相對路徑，以任務的工作目錄為基準
 const resolvePath = (path: string) =>
@@ -272,7 +297,7 @@ const logLevelClass = (level: string) =>
       </section>
 
       <!-- Agent 提問 -->
-      <section v-if="canFollowup && ask" class="rounded-lg border border-accent bg-accent-soft p-3">
+      <section v-if="canFollowup && ask && !answered" class="rounded-lg border border-accent bg-accent-soft p-3">
         <h4 class="mb-1 text-[11px] font-semibold uppercase tracking-wider text-accent">Agent 需要你決定</h4>
         <p class="mb-2 text-[13px] text-ink whitespace-pre-wrap select-text">{{ ask.question }}</p>
         <div class="flex flex-wrap gap-1.5">
@@ -348,6 +373,13 @@ const logLevelClass = (level: string) =>
             <div class="min-w-0 flex-1">
               <div class="font-mono text-[12px] text-ink break-all select-text">{{ a.file_path }}</div>
               <div v-if="a.summary" class="mt-0.5 text-ink-2 select-text">{{ a.summary }}</div>
+              <img
+                v-if="images[a.id]"
+                :src="images[a.id]"
+                :alt="a.summary || a.file_path"
+                @click="zoomed = images[a.id]"
+                class="mt-2 max-h-40 cursor-zoom-in rounded-md border border-line object-contain"
+              />
               <div class="mt-0.5 text-[11px] text-ink-3">@{{ a.agent_id }} · {{ relativeTime(a.created_at) }}</div>
             </div>
             <button @click="reveal(a.file_path)" title="在檔案管理器中顯示" class="shrink-0 rounded-md p-1 text-ink-3 hover:bg-raised hover:text-ink">
@@ -384,4 +416,9 @@ const logLevelClass = (level: string) =>
       </section>
     </div>
   </aside>
+  <Teleport to="body">
+    <div v-if="zoomed" @click="zoomed = null" class="fixed inset-0 z-[60] flex cursor-zoom-out items-center justify-center bg-black/70 p-6">
+      <img :src="zoomed" class="max-h-full max-w-full rounded-lg object-contain" />
+    </div>
+  </Teleport>
 </template>

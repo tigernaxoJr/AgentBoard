@@ -85,6 +85,12 @@ export function useTasks() {
     if (artifacts && selectedTaskId.value === taskId) activeTaskArtifacts.value = artifacts;
   };
 
+  // 圖片端點需要 token，<img> 帶不了標頭，所以取成 blob 再顯示
+  const fetchArtifactImage = async (artifactId: string): Promise<string | null> => {
+    const res = await api(`/api/artifacts/${artifactId}/file`);
+    return res.ok ? URL.createObjectURL(await res.blob()) : null;
+  };
+
   const selectTask = (taskId: string) => {
     selectedTaskId.value = taskId;
     activeTaskLogs.value = [];
@@ -301,9 +307,11 @@ export function useTasks() {
   });
 
   // 按 Agent 篩選
+  // 壓縮對話（/compact）完成後沒有可看的成果，不佔看板；帶著 worktree 的要留著，否則會看不到修改
   const filteredTasks = computed<Task[]>(() => {
-    if (agentFilter.value === "all") return tasks.value;
-    return tasks.value.filter(
+    const shown = tasks.value.filter((t: Task) => !(t.prompt === "/compact" && t.status === "completed" && !t.worktree_path));
+    if (agentFilter.value === "all") return shown;
+    return shown.filter(
       (t: Task) => t.assigned_agent === agentFilter.value || (!t.assigned_agent && agentFilter.value === "unassigned")
     );
   });
@@ -342,6 +350,7 @@ export function useTasks() {
     search,
     followupTask,
     activeTaskArtifacts,
+    fetchArtifactImage,
     fetchWorktree,
     fetchWorktreeDiff,
     mergeWorktree,

@@ -56,6 +56,7 @@
      * `GET /api/tasks`：查詢任務清單與狀態。
      * `POST /api/tasks/{id}/heartbeat`：Agent 定期回報心跳，維持租約（Lease）。
      * `POST /api/tasks/{id}/logs`：即時追加執行日誌（並透過 SSE 推播）。
+     * `GET /api/artifacts/{id}/file`：讀取成果檔案內容（路徑須落在任務的 workdir / worktree 內、上限 20MB；圖片依副檔名給 image/* 其餘為 octet-stream）。UI 以帶 token 的 fetch 取 blob 顯示縮圖，點擊放大。
      * `POST /api/tasks/{id}/complete`：Agent 回報完成並上傳成果路徑。
      * `POST /api/tasks/{id}/fail`：Agent 回報失敗或錯誤資訊。
      * `GET /api/stats`：統計面板資料彙整 API（按 Agent、工作目錄、日期）。
