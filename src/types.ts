@@ -9,8 +9,7 @@ export interface Task {
   status: TaskStatus;
   assigned_agent: string | null;
   creator: string;
-  depends_on_task_id: string | null;
-  dependency_ids?: string[];
+  dependency_ids: string[];
   parent_task_id: string | null;
   last_heartbeat_at: string | null;
   attempts: number;
@@ -55,7 +54,6 @@ export interface CreateTaskPayload {
   prompt: string;
   creator: string;
   assigned_agent?: string | null;
-  depends_on_task_id?: string | null;
   dependency_ids?: string[];
 }
 

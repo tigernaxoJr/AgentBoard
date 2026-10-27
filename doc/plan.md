@@ -40,6 +40,10 @@
      * `server/`：內嵌 Axum HTTP 服務，暴露 REST API 供外部 Agent 呼叫。
   3. 設定 `SQLx` 與 SQLite (啟用 WAL 模式以支援多 Agent 同時讀寫)。
   4. 建立資料表：
+
+> **後續變更（已移除 `tasks.depends_on_task_id`）**：依賴改由 `task_dependencies(task_id, depends_on_task_id)` 表表示，API 只接受 `dependency_ids` 陣列。
+> 原因：單一欄位只能表達一個前置任務；改成多重依賴後，兩處並存會產生兩個真相來源，必須同步維護，也讓 claim、連鎖失敗與重排的查詢更難推理。
+> 專案尚無線上版本，不需要相容舊 API 與舊資料，因此直接移除欄位，不保留「主要依賴」。下方內容為當時的原始規劃。
      * `tasks` (`id`, `title`, `prompt`, `status`, `assigned_agent`, `creator`, `depends_on_task_id`, `last_heartbeat_at`, `created_at`, `updated_at`)
      * `artifacts` (`id`, `task_id`, `agent_id`, `file_path`, `summary`, `created_at`)
      * `task_logs` (`id`, `task_id`, `agent_id`, `level`, `message`, `created_at`)

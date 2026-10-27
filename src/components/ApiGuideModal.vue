@@ -38,7 +38,7 @@ const curlCreateWithDep = `curl -X POST http://127.0.0.1:18833/api/tasks \\
     "prompt": "讀取前置產生的 CSV 檔產生圖表",
     "creator": "claude",
     "assigned_agent": "agy",
-    "depends_on_task_id": "<前置任務ID>"
+    "dependency_ids": ["<前置任務ID>"]
   }'`;
 
 // 常用端點速查（都需要 Authorization: Bearer <token>）
@@ -107,7 +107,7 @@ systemctl --user enable --now agent-board-runner.service`;
             <span>2. 設定連鎖相依任務 (DAG)</span>
           </h4>
           <p class="text-slate-500 mb-2 leading-relaxed">
-            當任務 B 必須等任務 A 完成才能開始時，只需在建立任務時附帶 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono">depends_on_task_id</code>。看板會自動鎖住任務 B，直到任務 A 狀態變為 <span class="text-emerald-500 font-semibold">completed</span>：
+            當任務 B 必須等任務 A 完成才能開始時，只需在建立任務時附帶 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono">dependency_ids</code>（陣列，可多個）。看板會自動鎖住任務 B，直到任務 A 狀態變為 <span class="text-emerald-500 font-semibold">completed</span>：
           </p>
           <div class="relative bg-slate-950 text-slate-200 rounded-xl p-3 font-mono text-[11px] border border-slate-800">
             <button

@@ -53,7 +53,6 @@ const handleSubmit = () => {
     prompt: prompt.value.trim(),
     creator: creator.value.trim() || "human",
     assigned_agent: assignedAgent.value === "none" ? null : assignedAgent.value,
-    depends_on_task_id: rawDeps[0] || null,
     dependency_ids: rawDeps,
   });
 };

@@ -413,7 +413,7 @@ TOOLS = [
 LIST_DEFAULT_LIMIT = 10
 TEXT_DEFAULT_MAX = 1500
 LIST_FIELDS = ("id", "title", "status", "assigned_agent", "priority", "dependency_ids", "parent_task_id", "cost_usd")
-DROP_FIELDS = {"last_heartbeat_at", "lease_id", "base_commit", "worktree_path", "depends_on_task_id", "updated_at"}
+DROP_FIELDS = {"last_heartbeat_at", "lease_id", "base_commit", "worktree_path", "updated_at"}
 
 
 def clip(text: Any, limit: int) -> Any:

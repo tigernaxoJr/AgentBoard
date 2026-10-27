@@ -107,7 +107,7 @@ python3 scripts/runner.py --agent agy --interval 3
 ### 支援工具清單
 * `list_tasks`：搜尋/檢視任務清單
 * `get_task`：取得任務詳情、結果、日誌與 Token
-* `create_task`：建立新任務（支援 model, workdir, depends_on_task_id / dependency_ids（多重依賴）, isolate 等）
+* `create_task`：建立新任務（支援 model, workdir, dependency_ids（多重依賴）, isolate 等）
 * `spawn_task`：由看板立即啟動子程序執行
 * `dispatch_task`：排入待辦派工給 Runner
 * `followup_task`：追加後續指示（接續 session）

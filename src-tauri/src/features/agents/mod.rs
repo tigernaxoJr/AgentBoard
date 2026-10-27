@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     fn task(model: Option<&str>, auto_approve: bool) -> Task {
-        let mut t = Task::new("t".into(), "做點事 --model evil; rm -rf /".into(), "human".into(), None, None);
+        let mut t = Task::new("t".into(), "做點事 --model evil; rm -rf /".into(), "human".into(), None);
         t.model = model.map(Into::into);
         t.auto_approve = auto_approve;
         t

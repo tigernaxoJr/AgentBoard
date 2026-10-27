@@ -24,8 +24,10 @@ const graph = computed(() => {
   const byId = new Map(props.tasks.map((t) => [t.id, t]));
   const edges: Edge[] = [];
   for (const t of props.tasks) {
-    const dep = t.depends_on_task_id && byId.get(t.depends_on_task_id);
-    if (dep) edges.push({ from: dep, to: t, kind: "dep" });
+    for (const id of t.dependency_ids) {
+      const dep = byId.get(id);
+      if (dep) edges.push({ from: dep, to: t, kind: "dep" });
+    }
     const parent = t.parent_task_id && byId.get(t.parent_task_id);
     if (parent) edges.push({ from: parent, to: t, kind: "followup" });
   }
@@ -112,10 +114,10 @@ const byId = computed(() => new Map(props.tasks.map((t) => [t.id, t])));
 
 // 卡住的原因：等前置任務、或因前置失敗被連帶標記失敗
 const blockedLabel = (t: Task) => {
-  const dep = t.depends_on_task_id ? byId.value.get(t.depends_on_task_id) : undefined;
-  if (!dep) return null;
-  if (t.status === "queued" && dep.status !== "completed") return "等待前置";
-  if (t.status === "failed" && t.attempts === 0 && dep.status === "failed") return "連鎖失敗";
+  const deps = t.dependency_ids.map((id) => byId.value.get(id)).filter((d): d is Task => !!d);
+  if (!deps.length) return null;
+  if (t.status === "queued" && deps.some((d) => d.status !== "completed")) return "等待前置";
+  if (t.status === "failed" && t.attempts === 0 && deps.some((d) => d.status === "failed")) return "連鎖失敗";
   return null;
 };
 </script>

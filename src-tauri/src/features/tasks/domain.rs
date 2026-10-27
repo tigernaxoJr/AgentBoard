@@ -11,8 +11,7 @@ pub struct Task {
     pub status: String,
     pub assigned_agent: Option<String>,
     pub creator: String,
-    pub depends_on_task_id: Option<String>,
-    /// 多重依賴 ID 清單
+    /// 依賴 ID 清單
     #[sqlx(skip)]
     pub dependency_ids: Vec<String>,
     /// 追加指示建立的任務指向原任務（不是依賴：原任務失敗也可以追加）
@@ -55,7 +54,6 @@ impl Task {
         prompt: String,
         creator: String,
         assigned_agent: Option<String>,
-        depends_on_task_id: Option<String>,
     ) -> Self {
         let now = Utc::now().to_rfc3339();
         Self {
@@ -65,7 +63,6 @@ impl Task {
             status: "queued".to_string(),
             assigned_agent,
             creator,
-            depends_on_task_id,
             dependency_ids: Vec::new(),
             parent_task_id: None,
             last_heartbeat_at: None,

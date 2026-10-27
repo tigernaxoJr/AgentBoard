@@ -17,7 +17,6 @@ async fn test_stats_and_templates_lifecycle() {
             prompt: "測試內容".into(),
             creator: Some("test".into()),
             assigned_agent: Some("claude".into()),
-            depends_on_task_id: None,
             dependency_ids: None,
             model: Some("sonnet".into()),
             workdir: Some("/test/dir".into()),

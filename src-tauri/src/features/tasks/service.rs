@@ -11,8 +11,7 @@ pub struct CreateTaskDto {
     pub prompt: String,
     pub creator: Option<String>,
     pub assigned_agent: Option<String>,
-    pub depends_on_task_id: Option<String>,
-    /// 多重依賴 ID 陣列（若提供則同時寫入 task_dependencies）
+    /// 依賴的任務 ID 陣列
     pub dependency_ids: Option<Vec<String>>,
     pub model: Option<String>,
     pub workdir: Option<String>,
@@ -167,20 +166,17 @@ impl TaskService {
     /// 建立任務
     pub async fn create_task(pool: &Pool<Sqlite>, dto: CreateTaskDto) -> Result<Task, sqlx::Error> {
         let mut dep_ids: Vec<String> = Vec::new();
-        for d in dto.dependency_ids.unwrap_or_default().into_iter().chain(dto.depends_on_task_id.clone()) {
+        for d in dto.dependency_ids.unwrap_or_default() {
             let d = d.trim().to_string();
             if !d.is_empty() && !dep_ids.contains(&d) {
                 dep_ids.push(d);
             }
         }
-        let primary_dep = dep_ids.first().cloned();
-
         let mut task = Task::new(
             dto.title,
             dto.prompt,
             dto.creator.unwrap_or_else(|| "human".to_string()),
             dto.assigned_agent,
-            primary_dep,
         );
         task.dependency_ids = dep_ids.clone();
         task.model = dto.model.filter(|m| !m.is_empty());
@@ -192,8 +188,8 @@ impl TaskService {
         let mut tx = pool.begin().await?;
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, model, workdir, auto_approve, isolate, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -202,7 +198,6 @@ impl TaskService {
         .bind(&task.status)
         .bind(&task.assigned_agent)
         .bind(&task.creator)
-        .bind(&task.depends_on_task_id)
         .bind(&task.last_heartbeat_at)
         .bind(&task.model)
         .bind(&task.workdir)
@@ -801,7 +796,7 @@ mod tests {
             CreateTaskDto {
                 title: title.into(),
                 prompt: "p".into(),
-                depends_on_task_id: dep.map(Into::into),
+                dependency_ids: dep.map(|d| vec![d.to_string()]),
                 ..Default::default()
             },
         )
@@ -1040,7 +1035,7 @@ mod tests {
             title: "b".into(),
             prompt: format!("根據分析：{DEP_RESULT_PLACEHOLDER}\n開始實作"),
             assigned_agent: Some("agy".into()),
-            depends_on_task_id: Some(a.id.clone()),
+            dependency_ids: Some(vec![a.id.clone()]),
             ..Default::default()
         };
         let b = TaskService::create_task(&pool, dto).await.unwrap();

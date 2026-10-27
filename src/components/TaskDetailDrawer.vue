@@ -195,13 +195,6 @@ const logLevelClass = (level: string) =>
             </span>
           </dd>
         </template>
-        <template v-else-if="task.depends_on_task_id">
-          <dt class="text-ink-3">前置任務</dt>
-          <dd class="flex items-center gap-1 font-mono text-amber-600 dark:text-amber-400 select-text">
-            <Icon name="link" :size="12" />
-            <button @click="emit('select', task.depends_on_task_id)" class="hover:underline">#{{ task.depends_on_task_id.slice(0, 8) }}</button>
-          </dd>
-        </template>
       </dl>
 
       <section>

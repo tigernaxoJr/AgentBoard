@@ -33,7 +33,6 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             status TEXT NOT NULL,
             assigned_agent TEXT,
             creator TEXT NOT NULL,
-            depends_on_task_id TEXT,
             last_heartbeat_at TEXT,
             lease_id TEXT,
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -46,8 +45,7 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             branch TEXT,
             base_commit TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id)
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -143,17 +141,6 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             sqlx::query(&format!("ALTER TABLE tasks ADD COLUMN {ddl}")).execute(pool).await?;
         }
     }
-
-    // 從舊 tasks.depends_on_task_id 移轉資料到 task_dependencies
-    sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id)
-        SELECT id, depends_on_task_id FROM tasks
-        WHERE depends_on_task_id IS NOT NULL AND depends_on_task_id != ''
-        "#,
-    )
-    .execute(pool)
-    .await?;
 
     Ok(())
 }

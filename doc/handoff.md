@@ -17,6 +17,10 @@
 
 ### 1. 多個前置任務
 目前一個任務只能有一個 `depends_on_task_id`。
+
+> **已完成並移除舊欄位**：已改用 `task_dependencies` 表，且 `tasks.depends_on_task_id` 已刪除，API 只接受 `dependency_ids`。
+> 原因：多重依賴後，單一欄位與依賴表並存會有兩個真相來源，必須同步維護，也讓 claim、連鎖失敗與重排的查詢更難推理。專案尚無線上版本，不需要相容舊 API 與舊資料，所以直接根本移除，不保留「主要依賴」。下方「做法」中保留舊欄位與搬資料的部分已不適用。
+
 - 做法：新增 `task_dependencies(task_id, depends_on_task_id)` 表（或 JSON 欄位），保留舊欄位做相容並在 migration 搬資料。
 - 需要一起改的地方：
   - `TaskService` 兩個 claim 查詢的「前置已完成」條件改成「全部前置都 completed」。

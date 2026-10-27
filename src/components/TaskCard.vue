@@ -65,7 +65,7 @@ const copyPrompt = async () => {
           {{ task.creator.slice(0, 1) }}
         </span>
         <span class="truncate">{{ task.creator }} · {{ relativeTime(task.status === 'running' ? task.last_heartbeat_at : task.updated_at) }}</span>
-        <span v-if="task.depends_on_task_id" class="text-amber-500" :title="`依賴 #${task.depends_on_task_id.slice(0, 8)}`">
+        <span v-if="task.dependency_ids.length" class="text-amber-500" :title="`依賴 ${task.dependency_ids.map((d) => '#' + d.slice(0, 8)).join(', ')}`">
           <Icon name="link" :size="12" />
         </span>
         <span v-if="formatCost(task.cost_usd)" class="font-mono" title="這次執行的花費">{{ formatCost(task.cost_usd) }}</span>
