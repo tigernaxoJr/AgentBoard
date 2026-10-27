@@ -1,0 +1,35 @@
+<script setup lang="ts">
+// 精簡的線條圖示集（路徑取自 Lucide 風格），取代 emoji
+const paths = {
+  plus: "M12 5v14M5 12h14",
+  refresh: "M21 12a9 9 0 1 1-2.64-6.36L21 8M21 3v5h-5",
+  copy: "M8 8h11v11H8zM5 16V5h11",
+  check: "M5 12.5l4.5 4.5L19 7",
+  play: "M7 4.5v15l12-7.5z",
+  link: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1",
+  x: "M6 6l12 12M18 6L6 18",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+  terminal: "M4 6l6 6-6 6M12 18h8",
+  layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
+  heart: "M3 12h4l2-5 4 10 2-5h6",
+};
+
+defineProps<{ name: keyof typeof paths; size?: number }>();
+</script>
+
+<template>
+  <svg
+    :width="size ?? 16"
+    :height="size ?? 16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    class="shrink-0"
+  >
+    <path :d="paths[name]" :fill="name === 'play' ? 'currentColor' : 'none'" />
+  </svg>
+</template>

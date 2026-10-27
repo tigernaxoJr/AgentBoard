@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+/* 設計 token：以 CSS 變數定義，亮/暗色各一組，再映射成 Tailwind 色彩 */
+:root {
+  --canvas: #f5f6f8;
+  --surface: #ffffff;
+  --raised: #eef0f3;
+  --line: #e2e5ea;
+  --line-strong: #cdd2da;
+  --ink: #15181d;
+  --ink-2: #4b525d;
+  --ink-3: #8b929d;
+  --accent: #5a54e0;
+  --accent-ink: #ffffff;
+  --accent-soft: #ecebfd;
+  --term: #0f1115;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #0b0c0f;
+    --surface: #131519;
+    --raised: #1a1d22;
+    --line: #23262d;
+    --line-strong: #323640;
+    --ink: #e9ebee;
+    --ink-2: #a5abb5;
+    --ink-3: #6a707b;
+    --accent: #8c87ff;
+    --accent-ink: #0b0c0f;
+    --accent-soft: #1f1d3d;
+    --term: #08090b;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-term: var(--term);
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 細捲軸，避免看板欄位被系統捲軸撐開 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}

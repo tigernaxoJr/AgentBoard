@@ -1,0 +1,92 @@
+<script setup lang="ts">
+import { ref } from "vue";
+import type { Task } from "../types";
+import { agentMeta, relativeTime } from "../ui";
+import Icon from "./Icon.vue";
+
+const props = defineProps<{
+  task: Task;
+  isSelected: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "select", task: Task): void;
+  (e: "play", agent: string): void;
+}>();
+
+const copied = ref(false);
+
+const copyPrompt = async () => {
+  try {
+    await navigator.clipboard.writeText(props.task.prompt);
+    copied.value = true;
+    setTimeout(() => {
+      copied.value = false;
+    }, 2000);
+  } catch (err) {
+    console.error("Failed to copy", err);
+  }
+};
+</script>
+
+<template>
+  <article
+    @click="emit('select', task)"
+    :class="[
+      'group relative overflow-hidden rounded-lg border bg-surface p-3.5 cursor-pointer transition-[border-color,box-shadow] duration-150 flex flex-col gap-2',
+      isSelected
+        ? 'border-accent shadow-[0_0_0_3px_var(--accent-soft)]'
+        : 'border-line hover:border-line-strong hover:shadow-sm'
+    ]"
+  >
+    <!-- 執行中：頂部流動進度條 -->
+    <div v-if="task.status === 'running'" class="absolute inset-x-0 top-0 h-0.5 overflow-hidden bg-sky-500/15">
+      <div class="h-full w-1/3 bg-sky-500 animate-[indeterminate_1.6s_ease-in-out_infinite]"></div>
+    </div>
+
+    <div class="flex items-center justify-between gap-2 text-[11px]">
+      <span class="font-mono text-ink-3">#{{ task.id.slice(0, 8) }}</span>
+      <span :class="['inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium ring-1 ring-inset', agentMeta(task.assigned_agent).chip]">
+        <span :class="['h-1.5 w-1.5 rounded-full', agentMeta(task.assigned_agent).dot]"></span>
+        {{ task.assigned_agent ? `@${task.assigned_agent}` : "任意" }}
+      </span>
+    </div>
+
+    <h3 class="text-[13px] font-semibold leading-snug text-ink line-clamp-2">{{ task.title }}</h3>
+    <p class="text-xs leading-relaxed text-ink-2 line-clamp-2">{{ task.prompt }}</p>
+
+    <footer class="mt-1 flex items-center justify-between text-[11px] text-ink-3">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="flex h-4 w-4 items-center justify-center rounded-full bg-raised text-[9px] font-bold uppercase text-ink-2">
+          {{ task.creator.slice(0, 1) }}
+        </span>
+        <span class="truncate">{{ task.creator }} · {{ relativeTime(task.status === 'running' ? task.last_heartbeat_at : task.updated_at) }}</span>
+        <span v-if="task.depends_on_task_id" class="text-amber-500" :title="`依賴 #${task.depends_on_task_id.slice(0, 8)}`">
+          <Icon name="link" :size="12" />
+        </span>
+      </div>
+
+      <div class="flex items-center gap-1" @click.stop>
+        <button
+          @click="copyPrompt"
+          :title="copied ? '已複製' : '複製完整提示詞'"
+          :class="[
+            'flex h-6 w-6 items-center justify-center rounded-md transition-all hover:bg-raised hover:text-ink',
+            copied ? 'text-emerald-500 opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+          ]"
+        >
+          <Icon :name="copied ? 'check' : 'copy'" :size="13" />
+        </button>
+        <button
+          v-if="task.status === 'queued'"
+          @click="emit('play', task.assigned_agent || 'agy')"
+          title="手動觸發執行"
+          class="flex h-6 items-center gap-1 rounded-md bg-accent-soft px-2 font-medium text-accent transition-colors hover:bg-accent hover:text-accent-ink"
+        >
+          <Icon name="play" :size="10" />
+          執行
+        </button>
+      </div>
+    </footer>
+  </article>
+</template>
