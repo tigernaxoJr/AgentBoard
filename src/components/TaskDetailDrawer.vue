@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Artifact, Task, TaskLog, WorktreeStatus } from "../types";
-import { STATUS_META, agentMeta, formatCost, formatDuration, formatTokens, relativeTime } from "../ui";
+import { STATUS_META, agentMeta, formatCost, formatDuration, formatTokens, parseAsk, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
 import WorktreePanel from "./WorktreePanel.vue";
 import { MAX_LOGS } from "../composables/useTasks";
@@ -41,6 +41,13 @@ watch(
 const canFollowup = computed(
   () => !!props.task?.assigned_agent && (props.task.status === "completed" || props.task.status === "failed")
 );
+
+// Agent 結尾附的提問：顯示成選項按鈕，點選後當作追加指示送出
+const ask = computed(() => parseAsk(props.task?.result ?? null));
+const answer = (text: string) => {
+  emit("followup", text, "spawn");
+  followup.value = "";
+};
 
 const sendFollowup = (mode: "spawn" | "dispatch") => {
   const text = followup.value.trim();
@@ -260,8 +267,25 @@ const logLevelClass = (level: string) =>
               <div class="text-[10px] text-ink-3">耗時</div>
             </div>
           </div>
-          <div v-if="task.result" class="max-h-64 overflow-y-auto p-3 text-[12px] leading-relaxed text-ink whitespace-pre-wrap select-text">{{ task.result }}</div>
+          <div v-if="task.result" class="max-h-64 overflow-y-auto p-3 text-[12px] leading-relaxed text-ink whitespace-pre-wrap select-text">{{ ask ? ask.body : task.result }}</div>
         </div>
+      </section>
+
+      <!-- Agent 提問 -->
+      <section v-if="canFollowup && ask" class="rounded-lg border border-accent bg-accent-soft p-3">
+        <h4 class="mb-1 text-[11px] font-semibold uppercase tracking-wider text-accent">Agent 需要你決定</h4>
+        <p class="mb-2 text-[13px] text-ink whitespace-pre-wrap select-text">{{ ask.question }}</p>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            v-for="opt in ask.options"
+            :key="opt"
+            @click="answer(opt)"
+            class="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-accent-ink hover:opacity-90"
+          >
+            {{ opt }}
+          </button>
+        </div>
+        <p class="mt-1.5 text-[11px] text-ink-3">也可以在下方「追加指示」自行輸入回答</p>
       </section>
 
       <!-- Follow-up -->
@@ -278,6 +302,14 @@ const logLevelClass = (level: string) =>
           ></textarea>
           <div class="flex items-center justify-end gap-1.5 border-t border-line px-2 py-1.5">
             <span class="mr-auto text-[11px] text-ink-3">@{{ task.assigned_agent }} · {{ task.model ?? "預設模型" }}</span>
+            <button
+              v-if="task.session_id"
+              @click="emit('followup', '/compact', 'spawn')"
+              title="壓縮這段對話的上下文，之後追加指示會更省 token"
+              class="rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-raised"
+            >
+              壓縮對話
+            </button>
             <button
               @click="sendFollowup('dispatch')"
               :disabled="!followup.trim()"

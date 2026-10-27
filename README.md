@@ -111,6 +111,7 @@ python3 scripts/runner.py --agent agy --interval 3
 * `spawn_task`：由看板立即啟動子程序執行
 * `dispatch_task`：排入待辦派工給 Runner
 * `followup_task`：追加後續指示（接續 session）
+  * Agent 若在結果結尾附上 ```` ```ask ```` 區塊（問題與選項），UI 會顯示成按鈕供點選回答；任務詳情也有「壓縮對話」（`/compact`）按鈕
 * `requeue_task` / `cancel_task`：重試或取消
 * `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案
 * `list_agents` / `list_runners` / `send_message`：查詢可用 Agent、Runner 與留訊息

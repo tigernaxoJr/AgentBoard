@@ -71,9 +71,19 @@ pub fn command_for(agent_id: &str, task: &Task) -> Option<Vec<String>> {
         ("claude", true) => argv.extend(["--permission-mode".into(), "bypassPermissions".into()]),
         _ => return None,
     }
-    argv.extend(["-p".into(), task.prompt.clone()]);
+    // 斜線指令（如 /compact）必須是完整的 prompt，不能附加說明
+    let prompt = if task.prompt.starts_with('/') {
+        task.prompt.clone()
+    } else {
+        format!("{}\n\n{ASK_HINT}", task.prompt)
+    };
+    argv.extend(["-p".into(), prompt]);
     Some(argv)
 }
+
+/// 附在每個 prompt 後的提問約定：headless 模式下 Agent 的原生提問工具不可用（claude 停用、agy 不輸出內容），
+/// 改由 Agent 在結果結尾附 ask 區塊，前端解析成選項按鈕（見 src/ui.ts 的 parseAsk）
+const ASK_HINT: &str = "[Board] If you cannot continue without the user's decision, stop and end your final reply with one fenced block tagged `ask` containing JSON: {\"question\":\"...\",\"options\":[\"A\",\"B\"]}. Otherwise do not output it.";
 
 /// 處理 Agent 輸出的一行：寫日誌、記錄工作階段與結果，並廣播日誌事件
 pub async fn ingest_output(
@@ -330,7 +340,7 @@ mod tests {
                 "--mode",
                 "accept-edits",
                 "-p",
-                "做點事 --model evil; rm -rf /"
+                &format!("做點事 --model evil; rm -rf /\n\n{ASK_HINT}")
             ]
         );
     }
@@ -349,7 +359,7 @@ mod tests {
                 "bypassPermissions"
             ]
         );
-        assert_eq!(argv.last().unwrap(), "做點事 --model evil; rm -rf /");
+        assert!(argv.last().unwrap().starts_with("做點事 --model evil; rm -rf /\n\n"));
         let agy = command_for("agy", &task(Some(""), true)).unwrap();
         assert_eq!(
             agy[..4],
@@ -377,6 +387,13 @@ mod tests {
             "{agy:?}"
         );
         assert_eq!(agy[agy.len() - 2], "-p");
+    }
+
+    #[test]
+    fn slash_command_prompt_is_sent_as_is() {
+        let mut t = task(None, false);
+        t.prompt = "/compact".into();
+        assert_eq!(command_for("claude", &t).unwrap().last().unwrap(), "/compact");
     }
 
     #[test]

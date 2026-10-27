@@ -60,3 +60,16 @@ export const formatDuration = (ms: number | null) => {
   const sec = Math.round(ms / 1000);
   return sec < 60 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 };
+
+/** 從結果文字取出 Agent 結尾附的 ```ask {question, options} 區塊；回傳問題與去掉區塊後的內文 */
+export const parseAsk = (result: string | null) => {
+  const m = result?.match(/```ask\s*([\s\S]*?)```/);
+  if (!result || !m) return null;
+  try {
+    const { question, options } = JSON.parse(m[1]);
+    if (typeof question !== "string" || !Array.isArray(options)) return null;
+    return { question, options: options.map(String), body: result.replace(m[0], "").trim() };
+  } catch {
+    return null;
+  }
+};
