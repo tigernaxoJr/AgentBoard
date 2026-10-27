@@ -14,6 +14,9 @@ const apiConfig: Promise<ApiConfig> = invoke<ApiConfig>("get_api_config").catch(
   token: import.meta.env.VITE_API_TOKEN ?? "",
 }));
 
+// 與後端 MAX_LOGS_PER_TASK 一致
+export const MAX_LOGS = 2000;
+
 const api = async (path: string, init: RequestInit = {}) => {
   const { base_url, token } = await apiConfig;
   return fetch(`${base_url}${path}`, {
@@ -109,8 +112,8 @@ export function useTasks() {
   const dispatchTask = (taskId: string, opts: Partial<RunOptions>) => postTaskAction(taskId, "dispatch", opts);
   // 排隊中或執行中都能取消；Runner 執行的任務會在下次心跳時中止
   const cancelTask = (taskId: string) => postTaskAction(taskId, "cancel");
-  // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）
-  const requeueTask = (taskId: string) => postTaskAction(taskId, "requeue");
+  // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）；fresh 捨棄工作階段，從頭執行
+  const requeueTask = (taskId: string, fresh = false) => postTaskAction(taskId, "requeue", { fresh });
 
   // 追加指示：建立接續原工作階段的新任務，再依 mode 立即執行或派發給 Runner
   const followupTask = async (taskId: string, prompt: string, mode: "spawn" | "dispatch") => {
@@ -178,7 +181,10 @@ export function useTasks() {
         const log = JSON.parse((e as MessageEvent).data).payload as TaskLog;
         // 只處理目前開著的任務；fetchLogs 與事件可能重疊，以 id 去重
         if (log.task_id !== selectedTaskId.value) return;
-        if (!activeTaskLogs.value.some((l) => l.id === log.id)) activeTaskLogs.value.push(log);
+        if (activeTaskLogs.value.some((l) => l.id === log.id)) return;
+        activeTaskLogs.value.push(log);
+        // 與後端相同只保留最近 MAX_LOGS 則
+        if (activeTaskLogs.value.length > MAX_LOGS) activeTaskLogs.value.splice(0, activeTaskLogs.value.length - MAX_LOGS);
       });
     } catch (e) {
       console.warn("SSE could not connect, will rely on polling fallback", e);

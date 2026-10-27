@@ -81,7 +81,8 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_assigned_agent ON tasks(assigned_agent);
-        CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_logs_task_time ON task_logs(task_id, created_at);
+        DROP INDEX IF EXISTS idx_task_logs_task_id;
         CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON artifacts(task_id);
         CREATE INDEX IF NOT EXISTS idx_agent_messages_receiver ON agent_messages(receiver, read_status);
         "#,

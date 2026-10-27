@@ -211,11 +211,20 @@ async fn cancel_task(
     Ok(StatusCode::OK)
 }
 
+#[derive(Deserialize, Default)]
+pub struct RequeueDto {
+    /// true = 捨棄工作階段，從頭執行
+    #[serde(default)]
+    pub fresh: bool,
+}
+
 async fn requeue_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
+    body: Option<Json<RequeueDto>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let result = TaskService::requeue_task(&state.pool, &id)
+    let fresh = body.map(|Json(b)| b.fresh).unwrap_or(false);
+    let result = TaskService::requeue_task(&state.pool, &id, fresh)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     match result {

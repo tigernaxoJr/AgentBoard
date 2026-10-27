@@ -46,7 +46,7 @@ const endpoints: [string, string, string][] = [
   ["POST", "/api/tasks/{id}/dispatch", "派發給 Runner，下次輪詢優先領取"],
   ["POST", "/api/tasks/{id}/followup", "追加指示（body：prompt），建立接續同一工作階段的新任務"],
   ["POST", "/api/tasks/{id}/cancel", "取消排隊中或執行中的任務"],
-  ["POST", "/api/tasks/{id}/requeue", "失敗的任務重新排隊（連帶失敗的下游一併恢復）"],
+  ["POST", "/api/tasks/{id}/requeue", "失敗的任務重新排隊（連帶失敗的下游一併恢復）；body {\"fresh\": true} 捨棄工作階段從頭執行"],
   ["POST", "/api/tasks/{id}/artifacts", "回報成果檔案（body：agent_id、file_path、summary）"],
   ["GET", "/api/tasks/{id}/worktree", "隔離執行的分支狀態；merge / discard 用 POST …/worktree/merge|discard"],
   ["GET", "/api/runners", "各 Agent 的 Runner 在線狀態"],

@@ -79,6 +79,13 @@ pub const MAX_ATTEMPTS: i64 = 3;
 
 /// 看板列表最多顯示幾筆已結束的任務
 pub const FINISHED_LIST_LIMIT: i64 = 200;
+/// 每個任務最多保留的日誌筆數，超過時刪除最舊的
+pub const MAX_LOGS_PER_TASK: i64 = 2000;
+/// 單則日誌的字數上限
+const MAX_LOG_CHARS: usize = 8000;
+/// 每新增這麼多則日誌才修剪一次，避免每次寫入都掃描
+const LOG_TRIM_EVERY: u64 = 100;
+static LOG_INSERTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 pub struct AddTaskLogDto {
@@ -468,7 +475,8 @@ impl TaskService {
 
     /// 重新排隊失敗的任務：attempts 歸零，並一併恢復因它連鎖失敗的下游任務
     /// （attempts = 0 代表從未被領取，只是被連帶標記失敗）
-    pub async fn requeue_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<RequeueResult, sqlx::Error> {
+    /// fresh = true 時清除工作階段，Agent 從頭執行而不是接續上一段對話
+    pub async fn requeue_task(pool: &Pool<Sqlite>, task_id: &str, fresh: bool) -> Result<RequeueResult, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
 
@@ -484,12 +492,14 @@ impl TaskService {
 
         let rows = sqlx::query(
             r#"
-            UPDATE tasks SET status = 'queued', attempts = 0, lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?
-            WHERE id = ? AND status = 'failed'
+            UPDATE tasks SET status = 'queued', attempts = 0, lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?1,
+                session_id = CASE WHEN ?3 THEN NULL ELSE session_id END
+            WHERE id = ?2 AND status = 'failed'
             "#,
         )
         .bind(&now)
         .bind(task_id)
+        .bind(fresh)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -588,7 +598,7 @@ impl TaskService {
             task_id: task_id.to_string(),
             agent_id: dto.agent_id,
             level: dto.level.unwrap_or_else(|| "INFO".to_string()),
-            message: dto.message,
+            message: agents::stream::truncate(&dto.message, MAX_LOG_CHARS),
             created_at: Utc::now().to_rfc3339(),
         };
 
@@ -607,15 +617,35 @@ impl TaskService {
         .execute(pool)
         .await?;
 
+        if LOG_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LOG_TRIM_EVERY == 0 {
+            Self::trim_logs(pool, task_id).await?;
+        }
         Ok(log)
     }
 
-    /// 取得任務的所有日誌
-    pub async fn get_logs(pool: &Pool<Sqlite>, task_id: &str) -> Result<Vec<TaskLog>, sqlx::Error> {
-        let logs = sqlx::query_as::<_, TaskLog>(
-            "SELECT * FROM task_logs WHERE task_id = ? ORDER BY created_at ASC"
+    async fn trim_logs(pool: &Pool<Sqlite>, task_id: &str) -> Result<u64, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            DELETE FROM task_logs WHERE id IN (
+                SELECT id FROM task_logs WHERE task_id = ?1 ORDER BY created_at DESC LIMIT -1 OFFSET ?2
+            )
+            "#,
         )
         .bind(task_id)
+        .bind(MAX_LOGS_PER_TASK)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(rows)
+    }
+
+    /// 取得任務最近的 MAX_LOGS_PER_TASK 則日誌（由舊到新）
+    pub async fn get_logs(pool: &Pool<Sqlite>, task_id: &str) -> Result<Vec<TaskLog>, sqlx::Error> {
+        let logs = sqlx::query_as::<_, TaskLog>(
+            "SELECT * FROM (SELECT * FROM task_logs WHERE task_id = ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
+        )
+        .bind(task_id)
+        .bind(MAX_LOGS_PER_TASK)
         .fetch_all(pool)
         .await?;
         Ok(logs)
@@ -846,15 +876,15 @@ mod tests {
         assert_eq!(status(&pool, &c.id).await, "failed");
 
         // 下游任務的前置任務仍是 failed，不能單獨重排
-        assert_eq!(TaskService::requeue_task(&pool, &b.id).await.unwrap(), RequeueResult::DependencyFailed);
-        assert_eq!(TaskService::requeue_task(&pool, &a.id).await.unwrap(), RequeueResult::Requeued { downstream: 2 });
+        assert_eq!(TaskService::requeue_task(&pool, &b.id, false).await.unwrap(), RequeueResult::DependencyFailed);
+        assert_eq!(TaskService::requeue_task(&pool, &a.id, false).await.unwrap(), RequeueResult::Requeued { downstream: 2 });
         for id in [&a.id, &b.id, &c.id] {
             assert_eq!(status(&pool, id).await, "queued");
         }
         // attempts 歸零，可以再被領取 MAX_ATTEMPTS 次
         let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
         assert_eq!((claimed.task.id.as_str(), claimed.task.attempts), (a.id.as_str(), 1));
-        assert_eq!(TaskService::requeue_task(&pool, &a.id).await.unwrap(), RequeueResult::NotFailed);
+        assert_eq!(TaskService::requeue_task(&pool, &a.id, false).await.unwrap(), RequeueResult::NotFailed);
     }
 
     #[tokio::test]
@@ -867,8 +897,39 @@ mod tests {
         TaskService::complete_task(&pool, &a.id, &ca.lease_id).await.unwrap();
         let cb = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
         TaskService::fail_task(&pool, &b.id, &cb.lease_id).await.unwrap();
-        assert_eq!(TaskService::requeue_task(&pool, &b.id).await.unwrap(), RequeueResult::Requeued { downstream: 0 });
+        assert_eq!(TaskService::requeue_task(&pool, &b.id, false).await.unwrap(), RequeueResult::Requeued { downstream: 0 });
         assert_eq!(status(&pool, &b.id).await, "queued");
+    }
+
+    #[tokio::test]
+    async fn fresh_requeue_drops_session() {
+        for (fresh, expected) in [(false, Some("sess-1")), (true, None)] {
+            let pool = memory_pool().await;
+            let t = new_task(&pool, "a", None).await;
+            let c = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            TaskService::set_session(&pool, &t.id, "sess-1").await.unwrap();
+            TaskService::fail_task(&pool, &t.id, &c.lease_id).await.unwrap();
+            TaskService::requeue_task(&pool, &t.id, fresh).await.unwrap();
+            let t = TaskService::get_task(&pool, &t.id).await.unwrap().unwrap();
+            assert_eq!(t.session_id.as_deref(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn trims_old_logs_and_truncates_long_messages() {
+        let pool = memory_pool().await;
+        let t = new_task(&pool, "a", None).await;
+        let log = |m: String| AddTaskLogDto { agent_id: "agy".into(), level: None, message: m };
+        for i in 0..MAX_LOGS_PER_TASK + 5 {
+            TaskService::add_log(&pool, &t.id, log(format!("line {i}"))).await.unwrap();
+        }
+        TaskService::trim_logs(&pool, &t.id).await.unwrap();
+        let logs = TaskService::get_logs(&pool, &t.id).await.unwrap();
+        assert_eq!(logs.len() as i64, MAX_LOGS_PER_TASK);
+        assert_eq!(logs.last().unwrap().message, format!("line {}", MAX_LOGS_PER_TASK + 4));
+
+        let long = TaskService::add_log(&pool, &t.id, log("字".repeat(MAX_LOG_CHARS + 10))).await.unwrap();
+        assert_eq!(long.message.chars().count(), MAX_LOG_CHARS + 1); // 含結尾的「…」
     }
 
     #[tokio::test]

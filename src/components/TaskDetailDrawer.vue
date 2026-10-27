@@ -5,6 +5,7 @@ import type { Artifact, Task, TaskLog, WorktreeStatus } from "../types";
 import { STATUS_META, agentMeta, formatCost, formatDuration, formatTokens, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
 import WorktreePanel from "./WorktreePanel.vue";
+import { MAX_LOGS } from "../composables/useTasks";
 
 const props = defineProps<{
   task: Task | null;
@@ -16,7 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "cancel"): void;
-  (e: "requeue"): void;
+  (e: "requeue", fresh: boolean): void;
   (e: "followup", prompt: string, mode: "spawn" | "dispatch"): void;
   (e: "select", taskId: string): void;
   (e: "merge-worktree"): void;
@@ -95,12 +96,22 @@ const logLevelClass = (level: string) =>
       <div class="flex items-center gap-1">
         <button
           v-if="task.status === 'failed'"
-          @click="emit('requeue')"
-          title="重新排隊（領取次數歸零，連帶失敗的下游任務一併恢復）"
+          @click="emit('requeue', false)"
+          :title="task.session_id
+            ? '重新排隊並接續上一段對話（領取次數歸零，連帶失敗的下游任務一併恢復）'
+            : '重新排隊（領取次數歸零，連帶失敗的下游任務一併恢復）'"
           class="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-accent hover:bg-accent-soft"
         >
           <Icon name="refresh" :size="12" />
-          重新排隊
+          {{ task.session_id ? "接續重試" : "重新排隊" }}
+        </button>
+        <button
+          v-if="task.status === 'failed' && task.session_id"
+          @click="emit('requeue', true)"
+          title="捨棄上一段對話，從頭重新執行"
+          class="h-7 rounded-md px-2 text-xs font-medium text-ink-2 hover:bg-raised"
+        >
+          從頭重試
         </button>
         <button
           v-if="task.status === 'queued' || task.status === 'running'"
@@ -290,7 +301,9 @@ const logLevelClass = (level: string) =>
             <Icon name="terminal" :size="12" />
             Live Logs
           </h4>
-          <span class="font-mono text-[11px] text-ink-3">{{ logs.length }} 則</span>
+          <span class="font-mono text-[11px] text-ink-3" :title="logs.length >= MAX_LOGS ? `只保留最近 ${MAX_LOGS} 則，較早的已清除` : undefined">
+            {{ logs.length >= MAX_LOGS ? "最近 " : "" }}{{ logs.length }} 則
+          </span>
         </div>
         <div
           ref="logBox"

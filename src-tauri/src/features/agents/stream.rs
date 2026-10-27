@@ -138,7 +138,7 @@ fn tool_log(name: &str, input: Option<&Value>) -> Parsed {
     Parsed::Log("TOOL", format!("▸ {name}  {}", truncate(detail.lines().next().unwrap_or(""), 200)).trim_end().to_string())
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((i, _)) => format!("{}…", &s[..i]),
         None => s.to_string(),

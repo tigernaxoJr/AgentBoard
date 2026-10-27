@@ -115,11 +115,11 @@ const handleFollowup = async (prompt: string, mode: RunMode) => {
   }
 };
 
-const handleRequeue = async () => {
+const handleRequeue = async (fresh: boolean) => {
   const task = selectedTask.value;
   if (!task) return;
   try {
-    await requeueTask(task.id);
+    await requeueTask(task.id, fresh);
   } catch (err: any) {
     alert("重新排隊失敗: " + err.message);
   }

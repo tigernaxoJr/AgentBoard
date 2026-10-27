@@ -13,6 +13,7 @@ import platform
 import signal
 import subprocess
 import threading
+import queue
 from pathlib import Path
 
 import requests
@@ -21,6 +22,9 @@ DEFAULT_SERVER_URL = "http://127.0.0.1:18833"
 APP_IDENTIFIER = "com.naxo.agent-board"
 # 需小於後端的 LEASE_TIMEOUT_SECS（預設 60 秒）
 HEARTBEAT_INTERVAL = float(os.environ.get("AGENT_BOARD_HEARTBEAT_SECS", 15))
+# 輸出批次送出：每隔 OUTPUT_FLUSH_SECS 秒或累積 OUTPUT_BATCH_LINES 行送一次
+OUTPUT_FLUSH_SECS = 0.5
+OUTPUT_BATCH_LINES = 50
 
 
 def default_token_file() -> Path:
@@ -81,16 +85,17 @@ class Board:
         except requests.RequestException:
             pass
 
-    def output(self, task, line: str):
-        """Agent 的原始輸出；伺服器解析 stream-json 後寫成日誌並記錄結果"""
+    def output(self, task, lines: list) -> bool:
+        """Agent 的原始輸出；伺服器解析 stream-json 後寫成日誌並記錄結果。回傳 False 代表租約已失效"""
         try:
-            self.http.post(
+            resp = self.http.post(
                 f"{self.server}/api/tasks/{task['id']}/output",
-                json={"agent_id": self.agent_id, "lease_id": task["lease_id"], "lines": [line]},
-                timeout=3,
+                json={"agent_id": self.agent_id, "lease_id": task["lease_id"], "lines": lines},
+                timeout=10,
             )
+            return resp.status_code != 409
         except requests.RequestException:
-            pass
+            return True
 
     def finish(self, task, ok: bool):
         action = "complete" if ok else "fail"
@@ -120,6 +125,43 @@ class HeartbeatThread(threading.Thread):
 
     def stop(self):
         self.stopped.set()
+
+
+class OutputSender(threading.Thread):
+    """在背景批次送出 Agent 輸出，讀取 stdout 的迴圈不會被網路延遲卡住"""
+
+    def __init__(self, board: Board, task):
+        super().__init__(daemon=True)
+        self.board, self.task = board, task
+        self.lines = queue.Queue()
+        self.closed = threading.Event()
+        self.lost = False
+
+    def put(self, line: str):
+        self.lines.put(line)
+
+    def run(self):
+        while True:
+            batch = []
+            deadline = time.monotonic() + OUTPUT_FLUSH_SECS
+            while len(batch) < OUTPUT_BATCH_LINES:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    break
+                try:
+                    batch.append(self.lines.get(timeout=timeout))
+                except queue.Empty:
+                    if self.closed.is_set():
+                        break
+            if batch and not self.lost and not self.board.output(self.task, batch):
+                self.lost = True  # 租約失效後丟棄剩下的輸出，由心跳執行緒負責中止
+            if self.closed.is_set() and self.lines.empty():
+                return
+
+    def close(self):
+        """送完佇列中剩下的輸出才返回"""
+        self.closed.set()
+        self.join()
 
 
 def kill_tree(proc: subprocess.Popen):
@@ -180,12 +222,16 @@ def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
         hb.start()
 
         # 輸出是 stream-json，原樣交給伺服器解析成日誌、結果與花費
+        sender = OutputSender(board, task)
+        sender.start()
         for line in proc.stdout:
             cleaned = line.strip()
             if cleaned:
                 print(f"[{agent_id}] {cleaned[:200]}")
-                board.output(task, cleaned)
+                sender.put(cleaned)
         ret = proc.wait()
+        # 結果事件在最後幾行，必須先送完才能回報完成
+        sender.close()
         hb.stop()
 
         if hb.lost:
