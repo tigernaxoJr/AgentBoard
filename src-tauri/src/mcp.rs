@@ -14,29 +14,10 @@ const DEFAULT_LIMIT: usize = 10;
 const DEFAULT_MAX_CHARS: usize = 1500;
 
 fn get_default_token_file() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return PathBuf::from(appdata).join(APP_IDENTIFIER).join("api_token");
-        }
-        if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            return PathBuf::from(userprofile).join(APP_IDENTIFIER).join("api_token");
-        }
-        PathBuf::from(APP_IDENTIFIER).join("api_token")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join("Library").join("Application Support").join(APP_IDENTIFIER).join("api_token")
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-            return PathBuf::from(xdg).join(APP_IDENTIFIER).join("api_token");
-        }
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".local").join("share").join(APP_IDENTIFIER).join("api_token")
-    }
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(APP_IDENTIFIER)
+        .join("api_token")
 }
 
 fn resolve_token() -> String {
@@ -157,22 +138,6 @@ fn slim_task(mut val: serde_json::Value, max_chars: usize) -> serde_json::Value 
         }
     }
     val
-}
-
-fn url_encode(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len() * 3);
-    for b in input.bytes() {
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(b as char);
-            }
-            b' ' => encoded.push('+'),
-            _ => {
-                encoded.push_str(&format!("%{:02X}", b));
-            }
-        }
-    }
-    encoded
 }
 
 // Tool Parameter Structs
@@ -356,7 +321,8 @@ impl AgentBoardMcpServer {
         let p = params.0;
         let mut path = "/api/tasks".to_string();
         if let Some(ref q) = p.query {
-            path = format!("{path}?q={}", url_encode(q));
+            let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+            path = format!("{path}?q={encoded}");
         }
 
         let res = self.client.get(&path).map(|val| {

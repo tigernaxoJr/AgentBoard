@@ -95,7 +95,7 @@ pnpm build
 cd src-tauri && PORT=18833 LEASE_TIMEOUT_SECS=30 cargo run --example headless -- /path/to/board.db /path/to/api_token
 
 # Runner 處理完佇列就結束
-python3 scripts/runner.py --agent agy --token "$(cat /path/to/api_token)" --once
+agent-board runner --agent agy --token "$(cat /path/to/api_token)" --once
 
 # 前端單獨在瀏覽器開（不經 Tauri 時用環境變數給 token）
 VITE_API_TOKEN="$(cat /path/to/api_token)" pnpm dev   # http://localhost:1420

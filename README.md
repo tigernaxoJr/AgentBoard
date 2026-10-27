@@ -78,10 +78,10 @@ loginctl enable-linger $USER
 
 ```bash
 # 以乾跑模式 (Dry-run 模擬執行與回報日誌，不實際調用 agy)
-python3 scripts/runner.py --agent agy --dry-run
+agent-board runner --agent agy --dry-run
 
 # 以真實模式啟動
-python3 scripts/runner.py --agent agy --interval 3
+agent-board runner --agent agy --interval 3
 ```
 
 ---
@@ -102,8 +102,8 @@ python3 scripts/runner.py --agent agy --interval 3
 
 ## 🔌 MCP Server 支援 (Model Context Protocol)
 
-專案提供標準 MCP Server 伺服端（`scripts/mcp_server.py`），支援以 stdio 傳輸，免裝外部套件（純 Python 標準庫）。
-讓 Claude Code、Claude Desktop、agy 或任何支援 MCP 的 Agent 能直接以原生工具呼叫看板，不必再寫 curl。
+Agent Board 執行檔本身即可兼當原生 MCP 伺服端（`agent-board mcp`），採用官方 `rmcp` 核心與 stdio 傳輸，**完全不需要安裝 Python 或外部套件**。
+讓 Claude Code、Claude Desktop、agy 或任何支援 MCP 的 Agent 能直接以原生工具呼叫看板，不必再寫 curl。若 Agent Board 主程式尚未開啟，工具亦會友善回傳提示。
 
 ### 支援工具清單
 * `list_tasks`：搜尋/檢視任務清單
@@ -119,23 +119,28 @@ python3 scripts/runner.py --agent agy --interval 3
 
 ### 配置方式範例
 
-#### 1. Claude CLI / Claude Code
+#### 1. 桌面端一鍵安裝（最推薦）
+開啟 Agent Board 桌面端 ➜ 點擊右上角「接入指南」➜ 點擊 **`⚡ 一鍵加入 Claude`** 或 **`⚡ 一鍵加入 agy`**，系統將自動為您完成配置！
+
+#### 2. CLI 手動新增
 ```bash
-claude mcp add agent-board python3 /path/to/agent_board/scripts/mcp_server.py
+claude mcp add agent-board /path/to/agent-board mcp
+# 或 agy
+agy mcp add agent-board /path/to/agent-board mcp
 ```
 
-#### 2. Claude Desktop (`claude_desktop_config.json`)
+#### 3. Claude Desktop (`claude_desktop_config.json`)
 ```json
 {
   "mcpServers": {
     "agent-board": {
-      "command": "python3",
-      "args": ["/path/to/agent_board/scripts/mcp_server.py"]
+      "command": "/path/to/agent-board",
+      "args": ["mcp"]
     }
   }
 }
 ```
-*(MCP Server 會自動從系統預設目錄讀取 `api_token`，亦支援 `--token` 或 `AGENT_BOARD_TOKEN` 環境變數)*
+*(MCP Server 會自動從系統預設目錄讀取 `api_token`，亦支援 `AGENT_BOARD_TOKEN` 環境變數)*
 
 ---
 

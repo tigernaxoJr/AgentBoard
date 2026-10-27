@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=%h/private/agent_board
-ExecStart=/usr/bin/python3 %h/private/agent_board/scripts/runner.py --agent agy --interval 3
+ExecStart=%h/.local/bin/agent-board runner --agent agy --interval 3
 Restart=always
 RestartSec=5
 # 繼承使用者的 PATH 與環境設定

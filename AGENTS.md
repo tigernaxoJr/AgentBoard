@@ -27,4 +27,4 @@
 ## 🛠️ 專案技術棧速查
 - **前端**：Tauri v2 + Vue 3 (TypeScript) + Tailwind CSS v4 + `@tauri-apps/plugin-dialog`
 - **後端**：Rust + Axum (REST API & SSE on `:18833`) + SQLite (WAL mode, sqlx)
-- **外部整合**：`scripts/runner.py` (Python 背景輪詢)、`scripts/mcp_server.py` (MCP Stdio)
+- **外部整合**：`agent-board mcp` (原生 MCP Stdio 服務)、`agent-board runner` (原生背景輪詢 Worker)

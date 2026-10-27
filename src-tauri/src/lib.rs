@@ -1,6 +1,7 @@
 pub mod db;
 pub mod features;
 pub mod mcp;
+pub mod runner;
 pub mod server;
 
 use serde::Serialize;
