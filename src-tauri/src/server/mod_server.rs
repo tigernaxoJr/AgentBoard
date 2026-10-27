@@ -793,7 +793,11 @@ Auth Header: Authorization: Bearer <API_TOKEN>
    When creating task B, set "dependency_ids": ["task_A_id"].
    Write "{{dep.result}}" inside task B's prompt. The board automatically replaces it with task A's output when task A completes.
 
-4. Other Useful Endpoints:
+4. Delegating to Downstream Agents (e.g. agy, claude):
+   If you want the assigned agent to also dispatch subtasks or interact with the board, include this instruction in your prompt:
+   "Local Agent Board is at http://127.0.0.1:18833. Run `curl -s http://127.0.0.1:18833/api/spec` to read the API manual if you need to create subtasks or report artifacts."
+
+5. Other Useful Endpoints:
    - GET /api/tasks : List all tasks (optional query ?q=keyword)
    - POST /api/tasks/{id}/cancel : Cancel a queued or running task
    - GET /api/agents : List registered local agents and available models

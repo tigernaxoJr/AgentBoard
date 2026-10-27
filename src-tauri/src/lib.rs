@@ -24,6 +24,47 @@ fn get_api_config(config: tauri::State<ApiConfig>) -> ApiConfig {
     config.inner().clone()
 }
 
+/// 一鍵將 Agent Board 的 mcp_server 註冊進指定 CLI Agent (claude 或 agy)
+#[tauri::command]
+async fn install_mcp_server(agent: String, config: tauri::State<'_, ApiConfig>) -> Result<String, String> {
+    if agent != "claude" && agent != "agy" {
+        return Err("僅支援 claude 或 agy".into());
+    }
+
+    let script_path = std::path::Path::new(&config.project_dir)
+        .join("scripts")
+        .join("mcp_server.py");
+
+    if !script_path.exists() {
+        return Err(format!("找不到 mcp_server.py: {}", script_path.display()));
+    }
+
+    // 優先使用 python3，若無則降級使用 python
+    let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+
+    let output = tokio::process::Command::new(&agent)
+        .args([
+            "mcp",
+            "add",
+            "agent-board",
+            python_cmd,
+            &script_path.to_string_lossy(),
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("執行 {agent} mcp add 失敗: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}").trim().to_string();
+
+    if output.status.success() {
+        Ok(combined)
+    } else {
+        Err(combined)
+    }
+}
+
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key)
         .ok()
@@ -80,7 +121,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![get_api_config])
+        .invoke_handler(tauri::generate_handler![get_api_config, install_mcp_server])
         .setup(|app| {
             // token 與資料庫都存在 App 資料夾（Linux: ~/.local/share/com.naxo.agent-board/），Runner 從這裡讀 token
             let data_dir = app.path().app_data_dir()?;
