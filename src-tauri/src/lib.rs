@@ -1,5 +1,6 @@
 pub mod db;
 pub mod features;
+pub mod mcp;
 pub mod server;
 
 use serde::Serialize;
@@ -16,6 +17,7 @@ struct ApiConfig {
     token: String,
     project_dir: String,
     token_file_path: String,
+    exe_path: String,
 }
 
 /// 前端透過 IPC 取得 API 位址與 token（token 不經過網頁可讀取的地方）
@@ -24,31 +26,23 @@ fn get_api_config(config: tauri::State<ApiConfig>) -> ApiConfig {
     config.inner().clone()
 }
 
-/// 一鍵將 Agent Board 的 mcp_server 註冊進指定 CLI Agent (claude 或 agy)
+/// 一鍵將 Agent Board 的原生 MCP 子命令註冊進指定 CLI Agent (claude 或 agy)
 #[tauri::command]
-async fn install_mcp_server(agent: String, config: tauri::State<'_, ApiConfig>) -> Result<String, String> {
+async fn install_mcp_server(agent: String) -> Result<String, String> {
     if agent != "claude" && agent != "agy" {
         return Err("僅支援 claude 或 agy".into());
     }
 
-    let script_path = std::path::Path::new(&config.project_dir)
-        .join("scripts")
-        .join("mcp_server.py");
-
-    if !script_path.exists() {
-        return Err(format!("找不到 mcp_server.py: {}", script_path.display()));
-    }
-
-    // 優先使用 python3，若無則降級使用 python
-    let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("無法取得當前執行檔路徑: {e}"))?;
 
     let output = tokio::process::Command::new(&agent)
         .args([
             "mcp",
             "add",
             "agent-board",
-            python_cmd,
-            &script_path.to_string_lossy(),
+            &exe_path.to_string_lossy(),
+            "mcp",
         ])
         .output()
         .await
@@ -139,6 +133,9 @@ pub fn run() {
             let project_dir = std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| ".".into());
+            let exe_path = std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let token_file_path = token_path.to_string_lossy().into_owned();
 
             app.manage(ApiConfig {
@@ -146,6 +143,7 @@ pub fn run() {
                 token: token.clone(),
                 project_dir,
                 token_file_path,
+                exe_path,
             });
 
             // 建立 System Tray

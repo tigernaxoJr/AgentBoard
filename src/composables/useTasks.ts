@@ -8,6 +8,7 @@ export interface ApiConfig {
   token: string;
   project_dir?: string;
   token_file_path?: string;
+  exe_path?: string;
 }
 
 // API 需要 token：在 Tauri 視窗內向 Rust 端取得；純瀏覽器開發時改用 VITE_API_TOKEN

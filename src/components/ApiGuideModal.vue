@@ -71,15 +71,12 @@ const aiPromptSnippet = computed(() => {
   return `請先執行 curl -s ${currentConfig.value.base_url}/api/spec 閱讀看板操作規格${tokenPart}，之後依照規格將任務發派到看板並追蹤完成。`;
 });
 
-const mcpScriptPath = computed(() => {
-  if (currentConfig.value.project_dir) {
-    const normalized = currentConfig.value.project_dir.replace(/\\/g, "/");
-    return `${normalized}/scripts/mcp_server.py`;
+const mcpCommand = computed(() => {
+  if (currentConfig.value.exe_path) {
+    return `claude mcp add agent-board "${currentConfig.value.exe_path}" mcp`;
   }
-  return "/path/to/agent_board/scripts/mcp_server.py";
+  return `claude mcp add agent-board agent-board mcp`;
 });
-
-const mcpSnippet = computed(() => `claude mcp add agent-board python3 "${mcpScriptPath.value}"`);
 
 interface EndpointDef {
   method: string;
@@ -282,12 +279,12 @@ const toggleEndpoint = (path: string) => {
 
           <div class="relative bg-slate-950 text-slate-200 rounded-xl p-3 font-mono text-[11px] border border-slate-800">
             <button
-              @click="copyText(mcpSnippet, 1)"
+              @click="copyText(mcpCommand, 1)"
               class="absolute top-2.5 right-2.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-colors"
             >
               {{ copiedIndex === 1 ? "✓ 已複製" : "複製指令" }}
             </button>
-            <pre class="overflow-x-auto whitespace-pre leading-relaxed pr-20">{{ mcpSnippet }}</pre>
+            <pre class="overflow-x-auto whitespace-pre leading-relaxed pr-20">{{ mcpCommand }}</pre>
           </div>
         </div>
 
