@@ -14,6 +14,11 @@ const prompt = ref("");
 const assignedAgent = ref<string>("agy");
 const creator = ref<string>("claude");
 const dependsOnTaskId = ref<string>("");
+// 與後端 DEP_RESULT_PLACEHOLDER 一致
+const DEP_RESULT = "{{dep.result}}";
+const insertDepResult = () => {
+  if (!prompt.value.includes(DEP_RESULT)) prompt.value = `${prompt.value.trimEnd()}\n\n前置任務的結果：\n${DEP_RESULT}`.trimStart();
+};
 
 const agentOptions = [
   { value: "agy", label: "@agy", hint: "本機 Autonomous Agent" },
@@ -121,6 +126,11 @@ const field = "w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm
               placeholder="6859560f-…"
               :class="[field, 'py-1.5 font-mono text-xs']"
             />
+            <p v-if="dependsOnTaskId.trim()" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+              Prompt 裡的
+              <button type="button" @click="insertDepResult" class="font-mono text-accent hover:underline" title="插入到 Prompt 結尾">{{ DEP_RESULT }}</button>
+              執行時會換成前置任務的結果
+            </p>
           </div>
         </div>
       </div>

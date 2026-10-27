@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
 import type { AgentDef, Artifact, CreateTaskPayload, RunnerStatus, RunOptions, Task, TaskLog, WorktreeStatus } from "../types";
@@ -32,16 +32,23 @@ export function useTasks() {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const agentFilter = ref<string>("all");
+  const search = ref("");
 
   let eventSource: EventSource | null = null;
+  // 搜尋字串變動時請求可能交錯回來，只採用最後一次
+  let fetchSeq = 0;
 
   const fetchTasks = async () => {
+    const seq = ++fetchSeq;
     loading.value = true;
     error.value = null;
     try {
-      const res = await api("/api/tasks");
+      // 有搜尋字串時由後端搜尋全部任務（含已不在列表中的舊任務）
+      const q = search.value.trim();
+      const res = await api(q ? `/api/tasks?q=${encodeURIComponent(q)}` : "/api/tasks");
       if (!res.ok) throw new Error(res.status === 401 ? "API token 無效" : "Failed to fetch tasks");
-      tasks.value = (await res.json()) as Task[];
+      const list = (await res.json()) as Task[];
+      if (seq === fetchSeq) tasks.value = list;
     } catch (e: any) {
       error.value = e.message;
     } finally {
@@ -198,6 +205,12 @@ export function useTasks() {
     runnerTimer = setInterval(fetchRunners, 15_000);
   });
 
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  watch(search, () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(fetchTasks, 250);
+  });
+
   onUnmounted(() => {
     clearInterval(runnerTimer);
     if (eventSource) {
@@ -242,6 +255,7 @@ export function useTasks() {
     dispatchTask,
     cancelTask,
     requeueTask,
+    search,
     followupTask,
     activeTaskArtifacts,
     fetchWorktree,

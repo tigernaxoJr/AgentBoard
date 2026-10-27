@@ -95,10 +95,16 @@ async fn create_task(
     Ok((StatusCode::CREATED, Json(task)))
 }
 
+#[derive(Deserialize)]
+pub struct ListTasksQuery {
+    pub q: Option<String>,
+}
+
 async fn list_tasks(
     State(state): State<ServerState>,
+    Query(params): Query<ListTasksQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let tasks = TaskService::list_tasks(&state.pool)
+    let tasks = TaskService::list_tasks(&state.pool, params.q.as_deref())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(tasks))

@@ -5,6 +5,7 @@ const emit = defineEmits<{
   (e: "close"): void;
 }>();
 
+const DEP_RESULT = "{{dep.result}}";
 const copiedIndex = ref<number | null>(null);
 
 const copyText = async (text: string, index: number) => {
@@ -115,6 +116,9 @@ systemctl --user enable --now agent-board-runner.service`;
             </button>
             <pre class="overflow-x-auto whitespace-pre leading-relaxed">{{ curlCreateWithDep }}</pre>
           </div>
+          <p class="text-slate-500 mt-2 leading-relaxed">
+            Prompt 裡寫 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono">{{ DEP_RESULT }}</code>，執行時會換成任務 A 的結果，可以串成「分析 → 實作 → 測試」的流水線。
+          </p>
         </div>
 
         <!-- 說明 3 -->

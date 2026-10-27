@@ -24,6 +24,7 @@ const {
   loading,
   error,
   agentFilter,
+  search,
   fetchTasks,
   createTask,
   selectTask,
@@ -43,7 +44,6 @@ const {
 const showCreateModal = ref(false);
 const showApiGuide = ref(false);
 const runTarget = ref<Task | null>(null);
-const search = ref("");
 // 看板 / 依賴關係圖
 const view = ref<"board" | "graph">("board");
 const searchInput = ref<HTMLInputElement | null>(null);
@@ -65,7 +65,7 @@ const runnerRows = computed(() =>
 
 const matches = (t: Task) => {
   const q = search.value.trim().toLowerCase();
-  return !q || [t.title, t.prompt, t.id].some((s) => s.toLowerCase().includes(q));
+  return !q || [t.title, t.prompt, t.id, t.result ?? ""].some((s) => s.toLowerCase().includes(q));
 };
 
 const columns = computed(() =>
@@ -298,7 +298,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           <input
             ref="searchInput"
             v-model="search"
-            placeholder="搜尋標題、Prompt 或 ID"
+            placeholder="搜尋標題、Prompt、結果或 ID"
             class="w-full h-8 rounded-lg border border-line bg-canvas pl-8 pr-8 text-xs text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft"
           />
           <kbd class="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-line px-1 font-mono text-[10px] text-ink-3">/</kbd>

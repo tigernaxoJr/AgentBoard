@@ -51,11 +51,30 @@ pub struct ClaimedTask {
     pub run_dir: Option<String>,
 }
 
+/// Prompt 內的這個字串在執行時換成前置任務的結果，用來串接多個任務
+pub const DEP_RESULT_PLACEHOLDER: &str = "{{dep.result}}";
+
 impl ClaimedTask {
-    fn new(task: Task, lease_id: String) -> Self {
-        let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &task));
+    async fn new(pool: &Pool<Sqlite>, task: Task, lease_id: String) -> Result<Self, sqlx::Error> {
+        // 只替換實際執行的 argv，資料庫裡的 prompt 保留範本原樣
+        let mut runnable = task.clone();
+        runnable.prompt = Self::render_prompt(pool, &task).await?;
+        let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &runnable));
         let run_dir = task.workdir.clone();
-        Self { task, lease_id, command, run_dir }
+        Ok(Self { task, lease_id, command, run_dir })
+    }
+
+    async fn render_prompt(pool: &Pool<Sqlite>, task: &Task) -> Result<String, sqlx::Error> {
+        let Some(dep_id) = task.depends_on_task_id.as_deref().filter(|_| task.prompt.contains(DEP_RESULT_PLACEHOLDER)) else {
+            return Ok(task.prompt.clone());
+        };
+        let result: Option<String> = sqlx::query_scalar("SELECT result FROM tasks WHERE id = ?")
+            .bind(dep_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+        let result = result.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| "（前置任務沒有回報結果）".into());
+        Ok(task.prompt.replace(DEP_RESULT_PLACEHOLDER, &result))
     }
 }
 
@@ -148,22 +167,31 @@ impl TaskService {
     }
 
     /// 列出任務：排隊中 / 執行中全部回傳，已結束的只回傳最近 FINISHED_LIST_LIMIT 筆
-    pub async fn list_tasks(pool: &Pool<Sqlite>) -> Result<Vec<Task>, sqlx::Error> {
-        let tasks = sqlx::query_as::<_, Task>(
+    /// 有搜尋字串時改為搜尋全部任務（標題、Prompt、ID、結果），回傳最近 FINISHED_LIST_LIMIT 筆
+    pub async fn list_tasks(pool: &Pool<Sqlite>, query: Option<&str>) -> Result<Vec<Task>, sqlx::Error> {
+        let query = query.map(str::trim).filter(|q| !q.is_empty());
+        let sql = if query.is_some() {
+            r#"
+            SELECT * FROM tasks
+            WHERE instr(lower(title || char(10) || prompt || char(10) || id || char(10) || coalesce(result, '')), lower(?2)) > 0
+            ORDER BY created_at DESC LIMIT ?1
+            "#
+        } else {
             r#"
             SELECT * FROM tasks
             WHERE status IN ('queued', 'running')
                OR id IN (
                  SELECT id FROM tasks WHERE status IN ('completed', 'failed')
-                 ORDER BY updated_at DESC LIMIT ?
+                 ORDER BY updated_at DESC LIMIT ?1
                )
             ORDER BY created_at DESC
-            "#,
-        )
-        .bind(FINISHED_LIST_LIMIT)
-        .fetch_all(pool)
-        .await?;
-        Ok(tasks)
+            "#
+        };
+        let q = sqlx::query_as::<_, Task>(sql).bind(FINISHED_LIST_LIMIT);
+        match query {
+            Some(text) => q.bind(text).fetch_all(pool).await,
+            None => q.fetch_all(pool).await,
+        }
     }
 
     /// 取得單一任務
@@ -216,7 +244,10 @@ impl TaskService {
         .fetch_optional(pool)
         .await?;
 
-        Ok(task.map(|task| ClaimedTask::new(task, lease_id)))
+        match task {
+            Some(task) => Ok(Some(ClaimedTask::new(pool, task, lease_id).await?)),
+            None => Ok(None),
+        }
     }
 
     /// 領取指定任務（方案 A：面板直接執行）
@@ -259,7 +290,10 @@ impl TaskService {
         .fetch_optional(pool)
         .await?;
 
-        Ok(task.map(|task| ClaimedTask::new(task, lease_id)))
+        match task {
+            Some(task) => Ok(Some(ClaimedTask::new(pool, task, lease_id).await?)),
+            None => Ok(None),
+        }
     }
 
     /// 手動派發：寫入執行設定並把排隊中的任務提到最前面，讓 Agent 下次輪詢就領到它
@@ -902,6 +936,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn substitutes_dependency_result_into_command() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let dto = CreateTaskDto {
+            title: "b".into(),
+            prompt: format!("根據分析：{DEP_RESULT_PLACEHOLDER}\n開始實作"),
+            assigned_agent: Some("agy".into()),
+            depends_on_task_id: Some(a.id.clone()),
+            ..Default::default()
+        };
+        let b = TaskService::create_task(&pool, dto).await.unwrap();
+        let ca = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let r = RunResult { text: "改 foo.rs".into(), ..Default::default() };
+        TaskService::set_result(&pool, &a.id, &r).await.unwrap();
+        TaskService::complete_task(&pool, &a.id, &ca.lease_id).await.unwrap();
+
+        let cb = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        assert_eq!(cb.task.id, b.id);
+        assert_eq!(cb.command.unwrap().last().unwrap(), "根據分析：改 foo.rs\n開始實作");
+        // 資料庫保留範本
+        assert!(cb.task.prompt.contains(DEP_RESULT_PLACEHOLDER));
+    }
+
+    #[tokio::test]
     async fn fresh_requeue_drops_session() {
         for (fresh, expected) in [(false, Some("sess-1")), (true, None)] {
             let pool = memory_pool().await;
@@ -942,11 +1000,17 @@ mod tests {
         }
         let queued = new_task(&pool, "queued", None).await;
 
-        let listed = TaskService::list_tasks(&pool).await.unwrap();
+        let listed = TaskService::list_tasks(&pool, None).await.unwrap();
         assert_eq!(listed.len() as i64, FINISHED_LIST_LIMIT + 1);
         assert!(listed.iter().any(|t| t.id == queued.id));
         // 最早結束的幾筆被排除
         assert!(!listed.iter().any(|t| t.title == "done0"));
+        // 搜尋涵蓋全部任務，包含被排除的舊任務與結果文字
+        let found = TaskService::list_tasks(&pool, Some(" DONE0 ")).await.unwrap();
+        assert_eq!(found.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["done0"]);
+        let r = RunResult { text: "找到的答案".into(), ..Default::default() };
+        TaskService::set_result(&pool, &queued.id, &r).await.unwrap();
+        assert_eq!(TaskService::list_tasks(&pool, Some("答案")).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
