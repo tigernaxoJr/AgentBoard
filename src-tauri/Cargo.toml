@@ -36,7 +36,7 @@ libc = "0.2"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
-codegen-units = 1
+codegen-units = 16
 lto = "fat"
 opt-level = "z"
 panic = "abort"
