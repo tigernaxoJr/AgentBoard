@@ -46,6 +46,7 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
         event_tx,
         api_token: Arc::new(api_token),
         spawner,
+        runners: features::runners::Runners::new(lease_timeout_secs),
         data_dir,
     };
 
@@ -59,6 +60,7 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![get_api_config])
         .setup(|app| {
             // token 與資料庫都存在 App 資料夾（Linux: ~/.local/share/com.naxo.agent-board/），Runner 從這裡讀 token

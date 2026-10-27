@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { Artifact, Task, TaskLog, WorktreeStatus } from "../types";
-import { STATUS_META, agentMeta, relativeTime } from "../ui";
+import { STATUS_META, agentMeta, formatCost, formatDuration, formatTokens, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
 import WorktreePanel from "./WorktreePanel.vue";
 
@@ -17,11 +17,32 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "cancel"): void;
   (e: "requeue"): void;
+  (e: "followup", prompt: string, mode: "spawn" | "dispatch"): void;
+  (e: "select", taskId: string): void;
   (e: "merge-worktree"): void;
   (e: "discard-worktree"): void;
 }>();
 
 const logBox = ref<HTMLElement | null>(null);
+const followup = ref("");
+
+// 切換任務時清掉沒送出的追加指示
+watch(
+  () => props.task?.id,
+  () => (followup.value = "")
+);
+
+// 已結束、知道是哪個 Agent 才能追加；有工作階段 ID 時會接續同一段對話
+const canFollowup = computed(
+  () => !!props.task?.assigned_agent && (props.task.status === "completed" || props.task.status === "failed")
+);
+
+const sendFollowup = (mode: "spawn" | "dispatch") => {
+  const text = followup.value.trim();
+  if (!text) return;
+  emit("followup", text, mode);
+  followup.value = "";
+};
 const copied = ref(false);
 
 // 新日誌進來時自動捲到底
@@ -54,7 +75,7 @@ const reveal = async (path: string) => {
 };
 
 const logLevelClass = (level: string) =>
-  ({ INFO: "text-sky-400", WARN: "text-amber-400", ERROR: "text-rose-400" })[level] ?? "text-slate-400";
+  ({ INFO: "text-sky-400", TOOL: "text-violet-400", WARN: "text-amber-400", ERROR: "text-rose-400" })[level] ?? "text-slate-400";
 </script>
 
 <template>
@@ -141,6 +162,18 @@ const logLevelClass = (level: string) =>
           <Icon v-if="task.last_heartbeat_at" name="heart" :size="12" class="text-sky-500" />
           {{ task.last_heartbeat_at ? relativeTime(task.last_heartbeat_at) : "無" }}
         </dd>
+        <template v-if="task.parent_task_id">
+          <dt class="text-ink-3">追加自</dt>
+          <dd>
+            <button @click="emit('select', task.parent_task_id)" class="font-mono text-accent hover:underline">
+              #{{ task.parent_task_id.slice(0, 8) }}
+            </button>
+          </dd>
+        </template>
+        <template v-if="task.session_id">
+          <dt class="text-ink-3">工作階段</dt>
+          <dd class="font-mono text-ink-2 truncate select-text" :title="task.session_id">{{ task.session_id }}</dd>
+        </template>
         <template v-if="task.depends_on_task_id">
           <dt class="text-ink-3">前置任務</dt>
           <dd class="flex items-center gap-1 font-mono text-amber-600 dark:text-amber-400 select-text">
@@ -162,6 +195,66 @@ const logLevelClass = (level: string) =>
           </button>
         </div>
         <div class="max-h-56 overflow-y-auto rounded-lg border border-line bg-raised/60 p-3 font-mono text-[12px] leading-relaxed text-ink whitespace-pre-wrap select-text">{{ task.prompt }}</div>
+      </section>
+
+      <!-- Result -->
+      <section v-if="task.result != null || task.duration_ms != null">
+        <h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">結果</h4>
+        <div class="rounded-lg border border-line">
+          <div class="grid grid-cols-4 divide-x divide-line border-b border-line text-center">
+            <div class="px-2 py-2">
+              <div class="font-mono text-[13px] font-semibold text-ink">{{ formatCost(task.cost_usd) ?? "—" }}</div>
+              <div class="text-[10px] text-ink-3">花費</div>
+            </div>
+            <div class="px-2 py-2">
+              <div class="font-mono text-[13px] font-semibold text-ink">{{ formatTokens(task.input_tokens) }}</div>
+              <div class="text-[10px] text-ink-3">輸入 token</div>
+            </div>
+            <div class="px-2 py-2">
+              <div class="font-mono text-[13px] font-semibold text-ink">{{ formatTokens(task.output_tokens) }}</div>
+              <div class="text-[10px] text-ink-3">輸出 token</div>
+            </div>
+            <div class="px-2 py-2">
+              <div class="font-mono text-[13px] font-semibold text-ink">{{ formatDuration(task.duration_ms) }}</div>
+              <div class="text-[10px] text-ink-3">耗時</div>
+            </div>
+          </div>
+          <div v-if="task.result" class="max-h-64 overflow-y-auto p-3 text-[12px] leading-relaxed text-ink whitespace-pre-wrap select-text">{{ task.result }}</div>
+        </div>
+      </section>
+
+      <!-- Follow-up -->
+      <section v-if="canFollowup">
+        <h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">追加指示</h4>
+        <div class="rounded-lg border border-line focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)]">
+          <textarea
+            v-model="followup"
+            rows="2"
+            :placeholder="task.session_id ? '例如：再補上測試（接續同一段對話）' : '例如：再補上測試（這個任務沒有工作階段 ID，會開新對話）'"
+            @keydown.ctrl.enter.prevent="sendFollowup('spawn')"
+            @keydown.meta.enter.prevent="sendFollowup('spawn')"
+            class="block w-full resize-none bg-transparent px-3 py-2 text-[12px] text-ink placeholder:text-ink-3 focus:outline-none"
+          ></textarea>
+          <div class="flex items-center justify-end gap-1.5 border-t border-line px-2 py-1.5">
+            <span class="mr-auto text-[11px] text-ink-3">@{{ task.assigned_agent }} · {{ task.model ?? "預設模型" }}</span>
+            <button
+              @click="sendFollowup('dispatch')"
+              :disabled="!followup.trim()"
+              class="rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-raised disabled:opacity-40"
+            >
+              派發給 Runner
+            </button>
+            <button
+              @click="sendFollowup('spawn')"
+              :disabled="!followup.trim()"
+              title="Ctrl+Enter"
+              class="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-40"
+            >
+              <Icon name="play" :size="10" />
+              立即執行
+            </button>
+          </div>
+        </div>
       </section>
 
       <WorktreePanel

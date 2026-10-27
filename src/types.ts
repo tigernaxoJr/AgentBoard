@@ -10,6 +10,7 @@ export interface Task {
   assigned_agent: string | null;
   creator: string;
   depends_on_task_id: string | null;
+  parent_task_id: string | null;
   last_heartbeat_at: string | null;
   attempts: number;
   priority: number;
@@ -20,6 +21,12 @@ export interface Task {
   worktree_path: string | null;
   branch: string | null;
   base_commit: string | null;
+  session_id: string | null;
+  result: string | null;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  duration_ms: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -74,4 +81,11 @@ export interface WorktreeStatus {
   commits: string[];
   changes: string[];
   diff_stat: string;
+}
+
+export interface RunnerStatus {
+  agent_id: string;
+  last_seen: string;
+  current_task: string | null;
+  online: boolean;
 }

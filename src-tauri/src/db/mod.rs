@@ -100,6 +100,13 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("worktree_path", "worktree_path TEXT"),
         ("branch", "branch TEXT"),
         ("base_commit", "base_commit TEXT"),
+        ("session_id", "session_id TEXT"),
+        ("parent_task_id", "parent_task_id TEXT"),
+        ("result", "result TEXT"),
+        ("cost_usd", "cost_usd REAL"),
+        ("input_tokens", "input_tokens INTEGER"),
+        ("output_tokens", "output_tokens INTEGER"),
+        ("duration_ms", "duration_ms INTEGER"),
     ] {
         let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?")
             .bind(column)

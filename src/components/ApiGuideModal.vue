@@ -40,6 +40,18 @@ const curlCreateWithDep = `curl -X POST http://127.0.0.1:18833/api/tasks \\
     "depends_on_task_id": "<前置任務ID>"
   }'`;
 
+// 常用端點速查（都需要 Authorization: Bearer <token>）
+const endpoints: [string, string, string][] = [
+  ["POST", "/api/tasks/{id}/spawn", "由面板立即在本機執行（body：agent_id、model、workdir、isolate…）"],
+  ["POST", "/api/tasks/{id}/dispatch", "派發給 Runner，下次輪詢優先領取"],
+  ["POST", "/api/tasks/{id}/followup", "追加指示（body：prompt），建立接續同一工作階段的新任務"],
+  ["POST", "/api/tasks/{id}/cancel", "取消排隊中或執行中的任務"],
+  ["POST", "/api/tasks/{id}/requeue", "失敗的任務重新排隊（連帶失敗的下游一併恢復）"],
+  ["POST", "/api/tasks/{id}/artifacts", "回報成果檔案（body：agent_id、file_path、summary）"],
+  ["GET", "/api/tasks/{id}/worktree", "隔離執行的分支狀態；merge / discard 用 POST …/worktree/merge|discard"],
+  ["GET", "/api/runners", "各 Agent 的 Runner 在線狀態"],
+];
+
 const systemdSnippet = `mkdir -p ~/.config/systemd/user
 cp scripts/agent-board-runner.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -125,6 +137,18 @@ systemctl --user enable --now agent-board-runner.service`;
         </div>
 
         <!-- 說明 4 -->
+        <div>
+          <h4 class="font-bold text-sm text-slate-900 dark:text-slate-100 mb-1.5">4. 其他常用 API</h4>
+          <div class="rounded-xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="[method, path, desc] in endpoints" :key="path" class="flex items-baseline gap-2 px-3 py-2">
+              <span class="w-9 shrink-0 font-mono text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">{{ method }}</span>
+              <code class="shrink-0 font-mono text-[11px] text-slate-800 dark:text-slate-200">{{ path }}</code>
+              <span class="text-slate-500">{{ desc }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 說明 5 -->
         <div class="bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
           <h5 class="font-bold text-slate-800 dark:text-slate-200 mb-1">💡 快捷提示：複製 Prompt 貼給純網頁 Agent</h5>
           <p class="text-slate-500 leading-relaxed">

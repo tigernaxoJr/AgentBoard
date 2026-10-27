@@ -1,4 +1,4 @@
-use crate::features::agents::AGENTS;
+use crate::features::agents::{self, AGENTS};
 use crate::features::tasks::{AddTaskLogDto, ClaimedTask, RunOptions, Task, TaskService};
 use crate::features::worktree;
 use crate::server::BoardEvent;
@@ -211,13 +211,11 @@ impl Spawner {
         }
     }
 
+    /// stdout 是 stream-json，stderr 是純文字，兩者都交給同一個解析器
     async fn pipe_lines(self, task_id: String, agent: String, stream: impl AsyncRead + Unpin) {
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let line = line.trim_end();
-            if !line.is_empty() {
-                self.log(&task_id, &agent, "INFO", line.to_string()).await;
-            }
+            agents::ingest_output(&self.pool, &self.event_tx, &task_id, &agent, &line).await;
         }
     }
 

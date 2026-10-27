@@ -7,7 +7,9 @@ import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
 import ApiGuideModal from "./components/ApiGuideModal.vue";
 import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
 import Icon from "./components/Icon.vue";
-import { STATUS_META, agentMeta } from "./ui";
+import DependencyGraph from "./components/DependencyGraph.vue";
+import { notifyEnabled } from "./composables/useNotifications";
+import { STATUS_META, agentMeta, relativeTime } from "./ui";
 import type { CreateTaskPayload, RunOptions, Task, TaskStatus } from "./types";
 
 const {
@@ -26,10 +28,12 @@ const {
   createTask,
   selectTask,
   agents,
+  runners,
   spawnTask,
   dispatchTask,
   cancelTask,
   requeueTask,
+  followupTask,
   activeTaskArtifacts,
   fetchWorktree,
   mergeWorktree,
@@ -40,6 +44,8 @@ const showCreateModal = ref(false);
 const showApiGuide = ref(false);
 const runTarget = ref<Task | null>(null);
 const search = ref("");
+// 看板 / 依賴關係圖
+const view = ref<"board" | "graph">("board");
 const searchInput = ref<HTMLInputElement | null>(null);
 
 const agentFilters = computed(() => [
@@ -48,6 +54,14 @@ const agentFilters = computed(() => [
   { value: "claude", label: "@claude", count: tasks.value.filter((t) => t.assigned_agent === "claude").length },
   { value: "unassigned", label: "未指定", count: tasks.value.filter((t) => !t.assigned_agent).length },
 ]);
+
+// 每個 Agent 一列；沒出現過的 Runner 也列出來，方便看出「沒有人在領這個 Agent 的任務」
+const runnerRows = computed(() =>
+  (agents.value.length ? agents.value.map((a) => a.id) : ["agy", "claude"]).map((id) => ({
+    id,
+    status: runners.value.find((r) => r.agent_id === id),
+  }))
+);
 
 const matches = (t: Task) => {
   const q = search.value.trim().toLowerCase();
@@ -88,6 +102,16 @@ const handleRun = async (mode: RunMode, opts: RunOptions) => {
     if (mode === "spawn") selectTask(task.id);
   } catch (err: any) {
     alert((mode === "spawn" ? "執行失敗: " : "派發失敗: ") + err.message);
+  }
+};
+
+const handleFollowup = async (prompt: string, mode: RunMode) => {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    await followupTask(task.id, prompt, mode);
+  } catch (err: any) {
+    alert("追加指示失敗: " + err.message);
   }
 };
 
@@ -185,6 +209,30 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
 
         <div>
+          <div class="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-3">Runners</div>
+          <div
+            v-for="r in runnerRows"
+            :key="r.id"
+            :title="r.status ? `最後出現：${relativeTime(r.status.last_seen)}` : '這次啟動後還沒有 Runner 連線'"
+            class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+          >
+            <span :class="['h-1.5 w-1.5 rounded-full', r.status?.online ? 'bg-emerald-500' : 'bg-ink-3/40']"></span>
+            <span class="text-ink-2">@{{ r.id }}</span>
+            <button
+              v-if="r.status?.online && r.status.current_task"
+              @click="selectTask(r.status.current_task)"
+              class="ml-auto font-mono text-[11px] text-accent hover:underline"
+              title="正在執行的任務"
+            >
+              #{{ r.status.current_task.slice(0, 6) }}
+            </button>
+            <span v-else class="ml-auto text-[11px] text-ink-3">
+              {{ !r.status ? "未連線" : r.status.online ? "閒置" : "離線" }}
+            </span>
+          </div>
+        </div>
+
+        <div>
           <div class="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-3">概覽</div>
           <div class="px-2 flex flex-col gap-2.5">
             <div v-for="c in columns" :key="c.status">
@@ -203,6 +251,22 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
       </nav>
 
+      <button
+        @click="notifyEnabled = !notifyEnabled"
+        :title="notifyEnabled ? '任務完成或失敗時發桌面通知（視窗在背景時）' : '桌面通知已關閉'"
+        class="border-t border-line px-4 py-2.5 flex items-center gap-2 text-[11px] text-ink-2 hover:bg-raised/60"
+      >
+        <Icon name="bell" :size="13" :class="!notifyEnabled && 'opacity-40'" />
+        <span>桌面通知</span>
+        <span
+          :class="['ml-auto relative h-3.5 w-6 rounded-full transition-colors', notifyEnabled ? 'bg-accent' : 'bg-raised ring-1 ring-line']"
+        >
+          <span
+            :class="['absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white shadow transition-[left]', notifyEnabled ? 'left-3' : 'left-0.5']"
+          ></span>
+        </span>
+      </button>
+
       <div class="border-t border-line px-4 py-3 flex items-center gap-2 text-[11px]">
         <span class="relative flex h-2 w-2">
           <span v-if="!error" class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-60 animate-ping"></span>
@@ -216,10 +280,20 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <!-- Main -->
     <div class="flex-1 min-w-0 flex flex-col">
       <header class="h-14 shrink-0 border-b border-line bg-surface px-5 flex items-center gap-3">
-        <h1 class="text-sm font-semibold">任務看板</h1>
-        <span class="text-xs text-ink-3">{{ tasks.length }} 個任務</span>
+        <h1 class="shrink-0 whitespace-nowrap text-sm font-semibold">任務看板</h1>
+        <span class="shrink-0 whitespace-nowrap text-xs text-ink-3">{{ tasks.length }} 個任務</span>
+        <div class="ml-2 flex shrink-0 whitespace-nowrap rounded-lg border border-line p-0.5 text-xs">
+          <button
+            v-for="v in [{ id: 'board', label: '看板' }, { id: 'graph', label: '關係圖' }] as const"
+            :key="v.id"
+            @click="view = v.id"
+            :class="['rounded-md px-2.5 py-1 font-medium transition-colors', view === v.id ? 'bg-raised text-ink' : 'text-ink-3 hover:text-ink']"
+          >
+            {{ v.label }}
+          </button>
+        </div>
 
-        <div class="ml-auto relative w-64">
+        <div class="ml-auto relative w-64 min-w-28 shrink">
           <Icon name="search" :size="14" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
             ref="searchInput"
@@ -233,7 +307,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <button
           @click="showApiGuide = true"
           title="Agent 派工與 API 接入指南"
-          class="h-8 px-2.5 flex items-center gap-1.5 rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink text-xs font-medium transition-colors"
+          class="h-8 px-2.5 shrink-0 whitespace-nowrap flex items-center gap-1.5 rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink text-xs font-medium transition-colors"
         >
           <span>📖</span>
           <span>接入指南</span>
@@ -241,14 +315,14 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <button
           @click="fetchTasks"
           title="重新整理"
-          class="h-8 w-8 flex items-center justify-center rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink"
+          class="h-8 w-8 shrink-0 flex items-center justify-center rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink"
         >
           <Icon name="refresh" :size="14" :class="loading && 'animate-spin'" />
         </button>
         <button
           @click="showCreateModal = true"
           title="新增任務 (N)"
-          class="h-8 px-3 flex items-center gap-1.5 rounded-lg bg-accent text-accent-ink text-xs font-semibold hover:opacity-90 transition-opacity"
+          class="h-8 px-3 shrink-0 whitespace-nowrap flex items-center gap-1.5 rounded-lg bg-accent text-accent-ink text-xs font-semibold hover:opacity-90 transition-opacity"
         >
           <Icon name="plus" :size="14" />
           新增任務
@@ -264,8 +338,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       </div>
 
       <div class="flex-1 flex min-h-0">
+        <DependencyGraph
+          v-if="view === 'graph'"
+          :tasks="columns.flatMap((c) => c.tasks)"
+          :selected-id="selectedTaskId"
+          @select="handleSelectTask"
+        />
+
         <!-- Kanban Columns -->
-        <main class="flex-1 min-w-0 overflow-x-auto p-5 flex gap-4">
+        <main v-else class="flex-1 min-w-0 overflow-x-auto p-5 flex gap-4">
           <section
             v-for="col in columns"
             :key="col.status"
@@ -308,6 +389,8 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           @discard-worktree="handleDiscardWorktree"
           @cancel="handleCancel"
           @requeue="handleRequeue"
+          @followup="handleFollowup"
+          @select="selectTask"
         />
       </div>
     </div>

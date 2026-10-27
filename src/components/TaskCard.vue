@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import type { Task } from "../types";
-import { agentMeta, relativeTime } from "../ui";
+import { agentMeta, formatCost, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
 
 const props = defineProps<{
@@ -68,6 +68,7 @@ const copyPrompt = async () => {
         <span v-if="task.depends_on_task_id" class="text-amber-500" :title="`依賴 #${task.depends_on_task_id.slice(0, 8)}`">
           <Icon name="link" :size="12" />
         </span>
+        <span v-if="formatCost(task.cost_usd)" class="font-mono" title="這次執行的花費">{{ formatCost(task.cost_usd) }}</span>
       </div>
 
       <div class="flex items-center gap-1" @click.stop>

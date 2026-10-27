@@ -1,5 +1,6 @@
 use super::domain::Task;
 use crate::features::agents;
+use crate::features::agents::stream::{RunResult, Usage};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
@@ -183,6 +184,7 @@ impl TaskService {
             r#"
             UPDATE tasks
             SET status = 'running', assigned_agent = ?1, lease_id = ?2,
+                result = NULL, cost_usd = NULL, input_tokens = NULL, output_tokens = NULL, duration_ms = NULL,
                 attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3
             WHERE status = 'queued' AND id = (
                 SELECT t.id FROM tasks t
@@ -225,6 +227,7 @@ impl TaskService {
             r#"
             UPDATE tasks
             SET status = 'running', assigned_agent = ?1, lease_id = ?2,
+                result = NULL, cost_usd = NULL, input_tokens = NULL, output_tokens = NULL, duration_ms = NULL,
                 attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3,
                 model = NULLIF(COALESCE(?4, model), ''),
                 workdir = NULLIF(COALESCE(?5, workdir), ''),
@@ -301,6 +304,59 @@ impl TaskService {
         Ok(())
     }
 
+    /// 記錄 Agent 的工作階段 ID，追加指示或重試時用來接續
+    pub async fn set_session(pool: &Pool<Sqlite>, task_id: &str, session_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE tasks SET session_id = ? WHERE id = ?").bind(session_id).bind(task_id).execute(pool).await?;
+        Ok(())
+    }
+
+    /// 記錄這次執行的結果；結果事件沒提供的數字保留逐步累加的值（每次領取時清空）
+    pub async fn set_result(pool: &Pool<Sqlite>, task_id: &str, r: &RunResult) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE tasks SET result = ?, cost_usd = COALESCE(?, cost_usd), input_tokens = COALESCE(?, input_tokens),
+                             output_tokens = COALESCE(?, output_tokens), duration_ms = COALESCE(?, duration_ms)
+            WHERE id = ?
+            "#,
+        )
+        .bind(&r.text)
+        .bind(r.cost_usd)
+        .bind(r.input_tokens)
+        .bind(r.output_tokens)
+        .bind(r.duration_ms)
+        .bind(task_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 累加這次執行的用量（agy 的結果事件是整段對話的累計，只能逐步加總）
+    pub async fn add_usage(pool: &Pool<Sqlite>, task_id: &str, u: &Usage) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE tasks SET input_tokens = COALESCE(input_tokens, 0) + ?, output_tokens = COALESCE(output_tokens, 0) + ?,
+                             duration_ms = COALESCE(duration_ms, 0) + ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(u.input_tokens)
+        .bind(u.output_tokens)
+        .bind(u.duration_ms)
+        .bind(task_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 是否仍持有執行中任務的租約
+    pub async fn holds_lease(pool: &Pool<Sqlite>, task_id: &str, lease_id: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tasks WHERE id = ? AND status = 'running' AND lease_id = ?")
+            .bind(task_id)
+            .bind(lease_id)
+            .fetch_one(pool)
+            .await
+    }
+
     /// 取消：排隊中或執行中的任務直接標記失敗並作廢租約
     /// 持有舊租約的執行者（Spawner / Runner）下次心跳會被拒，進而中止子程序
     pub async fn cancel_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
@@ -374,6 +430,40 @@ impl TaskService {
             Self::cascade_dependency_failures(pool).await?;
         }
         Ok(rows > 0)
+    }
+
+    /// 追加指示：以已結束的任務為基礎建立新任務，沿用同一個 Agent、執行設定與工作階段
+    /// 原任務的 worktree 移交給新任務，Agent 才能在同一份修改上接著做
+    /// 原任務不在已結束狀態或沒有指定 Agent 時回傳 None
+    pub async fn create_followup(pool: &Pool<Sqlite>, parent_id: &str, prompt: &str) -> Result<Option<Task>, sqlx::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut tx = pool.begin().await?;
+        let task: Option<Task> = sqlx::query_as(
+            r#"
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, parent_task_id, model, workdir, auto_approve, isolate,
+                               worktree_path, branch, base_commit, session_id, created_at, updated_at)
+            SELECT ?1, CASE WHEN title LIKE '↳ %' THEN title ELSE '↳ ' || title END, ?2, 'queued', assigned_agent, 'human', id,
+                   model, workdir, auto_approve, isolate, worktree_path, branch, base_commit, session_id, ?3, ?3
+            FROM tasks
+            WHERE id = ?4 AND status IN ('completed', 'failed') AND assigned_agent IS NOT NULL
+            RETURNING *
+            "#,
+        )
+        .bind(&id)
+        .bind(prompt)
+        .bind(&now)
+        .bind(parent_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if task.is_some() {
+            sqlx::query("UPDATE tasks SET worktree_path = NULL, branch = NULL, base_commit = NULL WHERE id = ?")
+                .bind(parent_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(task)
     }
 
     /// 重新排隊失敗的任務：attempts 歸零，並一併恢復因它連鎖失敗的下游任務
@@ -699,7 +789,7 @@ mod tests {
         let claimed = TaskService::claim_task(&pool, "claude").await.unwrap().unwrap();
         assert_eq!(
             claimed.command.unwrap(),
-            ["claude", "--model", "haiku", "--permission-mode", "acceptEdits", "-p", "p"]
+            ["claude", "--output-format", "stream-json", "--verbose", "--model", "haiku", "--permission-mode", "acceptEdits", "-p", "p"]
         );
         // 不在 Registry 裡的 Agent 也能領取，但沒有 command
         new_task(&pool, "b", None).await;
@@ -824,5 +914,61 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn followup_inherits_settings_session_and_worktree() {
+        let pool = memory_pool().await;
+        let parent = new_task(&pool, "寫功能", None).await;
+        let opts = RunOptions { agent_id: Some("claude".into()), model: Some("haiku".into()), workdir: Some("/repo".into()), isolate: Some(true), ..Default::default() };
+        let claimed = TaskService::claim_specific(&pool, &parent.id, "claude", &opts).await.unwrap().unwrap();
+        // 執行中不能追加
+        assert!(TaskService::create_followup(&pool, &parent.id, "再補測試").await.unwrap().is_none());
+        TaskService::set_session(&pool, &parent.id, "sess-1").await.unwrap();
+        TaskService::set_worktree(&pool, &parent.id, Some(("/wt/x", "agent-board/x", "abc"))).await.unwrap();
+        TaskService::complete_task(&pool, &parent.id, &claimed.lease_id).await.unwrap();
+
+        let child = TaskService::create_followup(&pool, &parent.id, "再補測試").await.unwrap().unwrap();
+        assert_eq!(child.title, "↳ 寫功能");
+        assert_eq!(child.status, "queued");
+        assert_eq!(child.prompt, "再補測試");
+        assert_eq!(child.parent_task_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(child.assigned_agent.as_deref(), Some("claude"));
+        assert_eq!(child.model.as_deref(), Some("haiku"));
+        assert_eq!(child.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(child.branch.as_deref(), Some("agent-board/x"));
+        assert!(child.isolate);
+        let parent = TaskService::get_task(&pool, &parent.id).await.unwrap().unwrap();
+        assert_eq!(parent.worktree_path, None, "worktree moves to the follow-up");
+
+        // 追加的追加不會疊加箭頭
+        let claimed = TaskService::claim_specific(&pool, &child.id, "claude", &RunOptions::default()).await.unwrap().unwrap();
+        TaskService::fail_task(&pool, &child.id, &claimed.lease_id).await.unwrap();
+        let grandchild = TaskService::create_followup(&pool, &child.id, "修好它").await.unwrap().unwrap();
+        assert_eq!(grandchild.title, "↳ 寫功能");
+    }
+
+    #[tokio::test]
+    async fn stores_run_result() {
+        let pool = memory_pool().await;
+        let task = new_task(&pool, "a", None).await;
+        let r = RunResult { text: "done".into(), cost_usd: Some(0.5), input_tokens: Some(10), output_tokens: Some(3), duration_ms: Some(1200), is_error: false };
+        TaskService::set_result(&pool, &task.id, &r).await.unwrap();
+        let t = TaskService::get_task(&pool, &task.id).await.unwrap().unwrap();
+        assert_eq!((t.result.as_deref(), t.cost_usd, t.input_tokens, t.output_tokens, t.duration_ms), (Some("done"), Some(0.5), Some(10), Some(3), Some(1200)));
+
+        // agy：逐步累加，結果事件只帶文字
+        let other = new_task(&pool, "b", None).await;
+        for _ in 0..2 {
+            TaskService::add_usage(&pool, &other.id, &Usage { input_tokens: 100, output_tokens: 5, duration_ms: 700 }).await.unwrap();
+        }
+        let text_only = RunResult { text: "ok".into(), ..Default::default() };
+        TaskService::set_result(&pool, &other.id, &text_only).await.unwrap();
+        let t = TaskService::get_task(&pool, &other.id).await.unwrap().unwrap();
+        assert_eq!((t.result.as_deref(), t.input_tokens, t.output_tokens, t.duration_ms), (Some("ok"), Some(200), Some(10), Some(1400)));
+
+        // 重新領取時清空上一次的結果
+        let claimed = TaskService::claim_specific(&pool, &task.id, "agy", &RunOptions::default()).await.unwrap().unwrap();
+        assert_eq!((claimed.task.result, claimed.task.cost_usd, claimed.task.input_tokens), (None, None, None));
     }
 }

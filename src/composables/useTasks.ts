@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentDef, Artifact, CreateTaskPayload, RunOptions, Task, TaskLog, WorktreeStatus } from "../types";
+import { notifyTask } from "./useNotifications";
+import type { AgentDef, Artifact, CreateTaskPayload, RunnerStatus, RunOptions, Task, TaskLog, WorktreeStatus } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -88,6 +89,14 @@ export function useTasks() {
     if (res.ok) agents.value = (await res.json()) as AgentDef[];
   };
 
+  // 方案 B 的 Runner 在線狀態；離線是「太久沒出現」，後端不會主動通知，所以定期重抓
+  const runners = ref<RunnerStatus[]>([]);
+  const fetchRunners = async () => {
+    const res = await api("/api/runners");
+    if (res.ok) runners.value = (await res.json()) as RunnerStatus[];
+  };
+  let runnerTimer: ReturnType<typeof setInterval> | undefined;
+
   const postTaskAction = async (taskId: string, action: string, body?: object) => {
     const res = await api(`/api/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify(body ?? {}) });
     if (!res.ok) throw new Error(await res.text());
@@ -95,13 +104,23 @@ export function useTasks() {
   };
 
   // 方案 A：寫入執行設定，由面板後端立即拉起 Agent 子程序
-  const spawnTask = (taskId: string, opts: RunOptions) => postTaskAction(taskId, "spawn", opts);
+  const spawnTask = (taskId: string, opts: Partial<RunOptions>) => postTaskAction(taskId, "spawn", opts);
   // 方案 B：寫入執行設定並排到該 Agent 佇列最前面，由 Runner 下次輪詢領取
-  const dispatchTask = (taskId: string, opts: RunOptions) => postTaskAction(taskId, "dispatch", opts);
+  const dispatchTask = (taskId: string, opts: Partial<RunOptions>) => postTaskAction(taskId, "dispatch", opts);
   // 排隊中或執行中都能取消；Runner 執行的任務會在下次心跳時中止
   const cancelTask = (taskId: string) => postTaskAction(taskId, "cancel");
   // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）
   const requeueTask = (taskId: string) => postTaskAction(taskId, "requeue");
+
+  // 追加指示：建立接續原工作階段的新任務，再依 mode 立即執行或派發給 Runner
+  const followupTask = async (taskId: string, prompt: string, mode: "spawn" | "dispatch") => {
+    const res = await api(`/api/tasks/${taskId}/followup`, { method: "POST", body: JSON.stringify({ prompt }) });
+    if (!res.ok) throw new Error(await res.text());
+    const child = (await res.json()) as Task;
+    tasks.value.unshift(child);
+    await (mode === "spawn" ? spawnTask : dispatchTask)(child.id, { agent_id: child.assigned_agent! });
+    selectTask(child.id);
+  };
 
   // 隔離執行的 worktree：查看狀態、合併回 repo、捨棄
   const fetchWorktree = async (taskId: string) => {
@@ -128,6 +147,7 @@ export function useTasks() {
       // 斷線重連期間可能漏掉事件，連上時整份同步一次
       eventSource.addEventListener("open", () => {
         fetchTasks();
+        fetchRunners();
         if (selectedTaskId.value) {
           fetchLogs(selectedTaskId.value);
           fetchArtifacts(selectedTaskId.value);
@@ -137,11 +157,19 @@ export function useTasks() {
       eventSource.addEventListener("task_created", handleUpdate);
       eventSource.addEventListener("task_claimed", handleUpdate);
       eventSource.addEventListener("task_dispatched", handleUpdate);
-      eventSource.addEventListener("task_completed", handleUpdate);
-      eventSource.addEventListener("task_failed", handleUpdate);
+      // 完成 / 失敗另外發桌面通知（手動取消的不通知）
+      const notifyFinished = (ok: boolean) => (e: Event) => {
+        const { id, cancelled } = JSON.parse((e as MessageEvent).data).payload as { id: string; cancelled?: boolean };
+        const task = tasks.value.find((t) => t.id === id);
+        if (!cancelled) notifyTask(ok ? "任務完成" : "任務失敗", `#${id.slice(0, 8)} ${task?.title ?? ""}`.trim());
+        fetchTasks();
+      };
+      eventSource.addEventListener("task_completed", notifyFinished(true));
+      eventSource.addEventListener("task_failed", notifyFinished(false));
       eventSource.addEventListener("task_recovered", handleUpdate);
       eventSource.addEventListener("task_requeued", handleUpdate);
       eventSource.addEventListener("worktree_changed", handleUpdate);
+      eventSource.addEventListener("runners_changed", fetchRunners);
       eventSource.addEventListener("artifact_created", (e) => {
         const artifact = JSON.parse((e as MessageEvent).data).payload as Artifact;
         if (artifact.task_id === selectedTaskId.value) activeTaskArtifacts.value.unshift(artifact);
@@ -161,9 +189,11 @@ export function useTasks() {
     fetchTasks();
     fetchAgents();
     initSSE();
+    runnerTimer = setInterval(fetchRunners, 15_000);
   });
 
   onUnmounted(() => {
+    clearInterval(runnerTimer);
     if (eventSource) {
       eventSource.close();
     }
@@ -201,10 +231,12 @@ export function useTasks() {
     createTask,
     selectTask,
     agents,
+    runners,
     spawnTask,
     dispatchTask,
     cancelTask,
     requeueTask,
+    followupTask,
     activeTaskArtifacts,
     fetchWorktree,
     mergeWorktree,

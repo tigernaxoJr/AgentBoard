@@ -81,6 +81,17 @@ class Board:
         except requests.RequestException:
             pass
 
+    def output(self, task, line: str):
+        """Agent 的原始輸出；伺服器解析 stream-json 後寫成日誌並記錄結果"""
+        try:
+            self.http.post(
+                f"{self.server}/api/tasks/{task['id']}/output",
+                json={"agent_id": self.agent_id, "lease_id": task["lease_id"], "lines": [line]},
+                timeout=3,
+            )
+        except requests.RequestException:
+            pass
+
     def finish(self, task, ok: bool):
         action = "complete" if ok else "fail"
         try:
@@ -168,11 +179,12 @@ def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
         hb = HeartbeatThread(board, task, on_lost=lambda: kill_tree(proc))
         hb.start()
 
+        # 輸出是 stream-json，原樣交給伺服器解析成日誌、結果與花費
         for line in proc.stdout:
             cleaned = line.strip()
             if cleaned:
-                print(f"[{agent_id}] {cleaned}")
-                board.log(task, cleaned)
+                print(f"[{agent_id}] {cleaned[:200]}")
+                board.output(task, cleaned)
         ret = proc.wait()
         hb.stop()
 

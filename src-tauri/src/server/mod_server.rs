@@ -1,6 +1,7 @@
-use crate::features::agents::AGENTS;
+use crate::features::agents::{self, AGENTS};
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
 use crate::features::execution::{SpawnError, Spawner};
+use crate::features::runners::Runners;
 use crate::features::worktree;
 use crate::features::messages::{MessageService, SendMessageDto};
 use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService};
@@ -33,6 +34,7 @@ pub struct ServerState {
     pub event_tx: broadcast::Sender<BoardEvent>,
     pub api_token: Arc<String>,
     pub spawner: Spawner,
+    pub runners: Runners,
     /// 資料庫與 worktree 所在的資料夾
     pub data_dir: PathBuf,
 }
@@ -53,14 +55,17 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/spawn", post(spawn_task))
         .route("/api/tasks/{id}/cancel", post(cancel_task))
         .route("/api/tasks/{id}/requeue", post(requeue_task))
+        .route("/api/tasks/{id}/followup", post(followup_task))
         .route("/api/tasks/{id}/worktree", get(worktree_status))
         .route("/api/tasks/{id}/worktree/merge", post(worktree_merge))
         .route("/api/tasks/{id}/worktree/discard", post(worktree_discard))
         .route("/api/agents", get(list_agents))
+        .route("/api/runners", get(list_runners))
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
         .route("/api/tasks/{id}/fail", post(fail_task))
         .route("/api/tasks/{id}/logs", post(add_task_log).get(get_task_logs))
+        .route("/api/tasks/{id}/output", post(task_output))
         // Artifacts
         .route("/api/tasks/{id}/artifacts", post(create_artifact).get(list_artifacts))
         // Messages
@@ -120,6 +125,7 @@ async fn claim_task(
     let mut task = TaskService::claim_task(&state.pool, &dto.agent_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    touch_runner(&state, &dto.agent_id, task.as_ref().map(|t| t.task.id.clone()));
 
     // 隔離執行：由伺服器建立 worktree，Runner 只需在回傳的 run_dir 執行
     if let Some(claimed) = task.as_mut() {
@@ -228,6 +234,31 @@ async fn requeue_task(
     }
 }
 
+#[derive(Deserialize)]
+pub struct FollowupDto {
+    pub prompt: String,
+}
+
+/// 追加指示：建立接續原任務工作階段的新任務（排隊中，由前端接著 spawn 或 dispatch）
+async fn followup_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(dto): Json<FollowupDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if dto.prompt.trim().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Prompt is empty".to_string()));
+    }
+    let task = TaskService::create_followup(&state.pool, &id, &dto.prompt)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::CONFLICT, "Task not found, not finished, or has no assigned agent".to_string()))?;
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "task_created".to_string(),
+        payload: serde_json::to_value(&task).unwrap_or_default(),
+    });
+    Ok(Json(task))
+}
+
 /// 取得 worktree 操作的目標任務；執行中的任務不能合併或捨棄
 async fn finished_task(state: &ServerState, id: &str) -> Result<crate::features::tasks::Task, (StatusCode, String)> {
     let task = TaskService::get_task(&state.pool, id)
@@ -281,6 +312,26 @@ async fn list_agents() -> impl IntoResponse {
     Json(AGENTS)
 }
 
+async fn list_runners(State(state): State<ServerState>) -> impl IntoResponse {
+    Json(state.runners.list())
+}
+
+/// 記錄 Runner 出現；狀態有變才廣播，閒置輪詢不會洗版
+fn touch_runner(state: &ServerState, agent_id: &str, current_task: Option<String>) {
+    if state.runners.touch(agent_id, current_task) {
+        let _ = state.event_tx.send(BoardEvent { event_type: "runners_changed".to_string(), payload: serde_json::json!({ "agent_id": agent_id }) });
+    }
+}
+
+/// 心跳 / 完成 / 失敗只帶任務 ID，從任務找出是哪個 Agent 的 Runner
+async fn touch_runner_for_task(state: &ServerState, task_id: &str, running: bool) {
+    if let Ok(Some(task)) = TaskService::get_task(&state.pool, task_id).await {
+        if let Some(agent) = task.assigned_agent {
+            touch_runner(state, &agent, running.then(|| task_id.to_string()));
+        }
+    }
+}
+
 const LEASE_MISMATCH: &str = "Task not running or lease mismatch";
 
 async fn heartbeat_task(
@@ -293,6 +344,7 @@ async fn heartbeat_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if success {
+        touch_runner_for_task(&state, &id, true).await;
         Ok(StatusCode::OK)
     } else {
         Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()))
@@ -309,6 +361,7 @@ async fn complete_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if success {
+        touch_runner_for_task(&state, &id, false).await;
         let _ = state.event_tx.send(BoardEvent {
             event_type: "task_completed".to_string(),
             payload: serde_json::json!({ "id": id }),
@@ -329,6 +382,7 @@ async fn fail_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if success {
+        touch_runner_for_task(&state, &id, false).await;
         let _ = state.event_tx.send(BoardEvent {
             event_type: "task_failed".to_string(),
             payload: serde_json::json!({ "id": id }),
@@ -337,6 +391,32 @@ async fn fail_task(
     } else {
         Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()))
     }
+}
+
+#[derive(Deserialize)]
+pub struct OutputDto {
+    pub lease_id: String,
+    pub agent_id: String,
+    pub lines: Vec<String>,
+}
+
+/// Runner 回傳 Agent 的原始輸出（stream-json 或純文字），由伺服器解析成日誌、結果與工作階段
+/// 會寫入結果與工作階段，所以必須持有租約
+async fn task_output(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(dto): Json<OutputDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let holds = TaskService::holds_lease(&state.pool, &id, &dto.lease_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !holds {
+        return Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()));
+    }
+    for line in &dto.lines {
+        agents::ingest_output(&state.pool, &state.event_tx, &id, &dto.agent_id, line).await;
+    }
+    Ok(StatusCode::OK)
 }
 
 async fn add_task_log(

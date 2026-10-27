@@ -50,3 +50,13 @@ export const relativeTime = (iso: string | null) => {
   if (sec < 86400) return `${Math.round(sec / 3600)} 小時前`;
   return `${Math.round(sec / 86400)} 天前`;
 };
+
+/** 花費 / token / 耗時的精簡顯示 */
+export const formatCost = (usd: number | null) => (usd == null ? null : usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`);
+export const formatTokens = (n: number | null) =>
+  n == null ? "—" : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+export const formatDuration = (ms: number | null) => {
+  if (ms == null) return "—";
+  const sec = Math.round(ms / 1000);
+  return sec < 60 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+};

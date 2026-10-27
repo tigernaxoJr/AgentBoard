@@ -12,6 +12,8 @@ pub struct Task {
     pub assigned_agent: Option<String>,
     pub creator: String,
     pub depends_on_task_id: Option<String>,
+    /// 追加指示建立的任務指向原任務（不是依賴：原任務失敗也可以追加）
+    pub parent_task_id: Option<String>,
     pub last_heartbeat_at: Option<String>,
     /// 每次領取產生的租約 ID，只回傳給領取者，用來驗證 heartbeat / complete / fail
     #[serde(skip_serializing)]
@@ -32,6 +34,14 @@ pub struct Task {
     pub worktree_path: Option<String>,
     pub branch: Option<String>,
     pub base_commit: Option<String>,
+    /// Agent 的工作階段 ID（claude session_id / agy conversation_id）；有值時下次執行會接續該工作階段
+    pub session_id: Option<String>,
+    /// 最後一次執行的結果文字、費用（USD，agy 不提供）、token 數與耗時
+    pub result: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub duration_ms: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -53,6 +63,7 @@ impl Task {
             assigned_agent,
             creator,
             depends_on_task_id,
+            parent_task_id: None,
             last_heartbeat_at: None,
             lease_id: None,
             attempts: 0,
@@ -64,6 +75,12 @@ impl Task {
             worktree_path: None,
             branch: None,
             base_commit: None,
+            session_id: None,
+            result: None,
+            cost_usd: None,
+            input_tokens: None,
+            output_tokens: None,
+            duration_ms: None,
             created_at: now.clone(),
             updated_at: now,
         }

@@ -13,9 +13,10 @@
   做法：抽屜新增「成果」區塊，列出檔案路徑與摘要；用 `tauri-plugin-opener` 一鍵開啟檔案或工作目錄。
   實作備註：只提供「在檔案管理器中顯示」，不直接開啟檔案（路徑由 Agent 回報，直接開啟可能執行到腳本）。
 
-- [ ] **桌面通知**
+- [x] **桌面通知**
   任務完成 / 失敗時跳系統通知，不必一直盯著看板。
   做法：`tauri-plugin-notification`，在前端收到 `task_completed` / `task_failed` 事件時通知；設定可關閉。
+  實作備註：只在視窗不在前景時通知，手動取消的不通知；側邊欄有開關（存在 localStorage）。
 
 ## 中
 
@@ -23,19 +24,23 @@
   多個 coding agent 同時修改同一個 repo 會互相覆蓋。
   做法：任務新增「隔離」選項，執行前在 `workdir` 的 repo 建立 `agent-board/<task-id>` 分支與 worktree，Agent 在 worktree 內執行；完成後在抽屜顯示 diff 摘要與「合併 / 刪除」操作。
 
-- [ ] **延續對話（追加指示）**
+- [x] **延續對話（追加指示）**
   任務完成後可在抽屜補一句「再補上測試」，接續同一個 Agent session。
   做法：記錄 session / conversation ID（claude `--output-format json` 回傳 `session_id`；agy `--conversation`），追加指示時以 `--resume` / `--conversation` 執行。
+  實作備註：`POST /api/tasks/{id}/followup` 建立新任務（`parent_task_id` 指回原任務），沿用 Agent、模型、工作目錄與工作階段；原任務的 worktree 移交給新任務。
 
-- [ ] **花費與結果摘要**
+- [x] **花費與結果摘要**
   改用 `--output-format json`（或 stream-json）擷取最終結果、token 數與費用，顯示在卡片與抽屜上。
+  實作備註：兩個 Agent 都改用 stream-json，由伺服器解析（`features/agents/stream.rs`）；Runner 把原始輸出送到 `POST /api/tasks/{id}/output`。日誌改成精簡的文字與工具呼叫（`TOOL` 等級）。
 
-- [ ] **Runner 在線狀態**
+- [x] **Runner 在線狀態**
   側邊欄目前只顯示 API 是否連線。
   做法：Runner 每次輪詢順便回報 `agent_id`，後端記錄最後出現時間；側邊欄顯示「@agy Runner：在線 / 離線、正在執行 #xxxx」。
+  實作備註：由領取與心跳請求推算，不必改 Runner；`GET /api/runners`，超過租約逾時時間沒出現即視為離線。
 
-- [ ] **依賴關係圖（DAG）**
+- [x] **依賴關係圖（DAG）**
   Claude 一次建立一串有依賴的任務時，用圖一眼看出卡在哪裡。
+  實作備註：標題列切換「看板 / 關係圖」；依賴邊依前置狀態上色，追加指示以虛線連接，並標出「等待前置」「連鎖失敗」。
 
 ## 已知限制（暫不處理）
 
@@ -43,3 +48,6 @@
 - worktree 的 diff 統計不含尚未加入 git 的新檔案（新檔案仍會列在「未 commit 的變更」）。
 - 合併一律 merge 進 repo 目前 checkout 的分支；repo 有未 commit 的衝突變更時合併會失敗並自動 abort。
 - 日誌沒有上限，長時間執行的 Agent 會讓單一任務的日誌很大。
+- Runner 在線狀態只存在記憶體中，同一個 Agent 有多個 Runner 時合併成一筆；面板重啟後要等 Runner 下次輪詢才會出現。
+- agy 不回報費用，只顯示 token 與耗時；agy 的 token / 耗時是逐步加總，不含 CLI 啟動時間。
+- 任務有工作階段 ID 時，重試與重新排隊也會接續上一段對話（而不是從頭開始）。
