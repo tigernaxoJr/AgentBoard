@@ -17,22 +17,22 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #0b0c0f;
-    --surface: #131519;
-    --raised: #1a1d22;
-    --line: #23262d;
-    --line-strong: #323640;
-    --ink: #e9ebee;
-    --ink-2: #a5abb5;
-    --ink-3: #6a707b;
-    --accent: #8c87ff;
-    --accent-ink: #0b0c0f;
-    --accent-soft: #1f1d3d;
-    --term: #08090b;
-    color-scheme: dark;
-  }
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root[data-theme="dark"] {
+  --canvas: #1b1e25;
+  --surface: #252932;
+  --raised: #2f343f;
+  --line: #3a3f4b;
+  --line-strong: #4d5361;
+  --ink: #f1f3f6;
+  --ink-2: #b9bfca;
+  --ink-3: #8f96a3;
+  --accent: #8c87ff;
+  --accent-ink: #0b0c0f;
+  --accent-soft: #33316b;
+  --term: #12141a;
+  color-scheme: dark;
 }
 
 @theme inline {

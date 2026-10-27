@@ -7,11 +7,21 @@
 ## 目前狀態
 
 - 分支 `main`，**沒有設定 git remote**，所有 commit 都只在本機。
-- 工作目錄有一個**未 commit 的改動**：`src-tauri/Cargo.toml` 的 `[profile.release]` 把 `codegen-units` 從 1 改成 16（不是開發過程中改的，請確認是否保留）。
-  - 1：執行檔最小，但 release 最後的最佳化與連結只能單核心跑（8 核心平均只用到約 150% CPU，約 2 分 36 秒）。
-  - 16：編譯快很多，執行檔稍大。若同時把 `lto = "fat"` 改成 `"thin"` 會更快。
-- `scripts/__pycache__/runner.cpython-314.pyc` 被 git 追蹤了，每次執行或 `py_compile` runner 都會變動。建議 `git rm --cached` 並加進 `.gitignore`。
-- release 執行檔（`pnpm tauri build --no-bundle` → `src-tauri/target/release/agent-board`）有成功建置過，但**沒有實際啟動測試過**，而且是在最近兩個 commit 之前建的，需要重新建置。
+- release 執行檔（`pnpm tauri build --no-bundle` → `src-tauri/target/release/agent-board`）支援 `lto = "thin"` 高速並行編譯。
+- 已加入 `AGENTS.md`，明確規定所有 Agent 實作功能時必須同步更新文件。
+
+## 已完成的主要功能 (Completed)
+
+- [x] **多個前置任務 (Multi-dependency DAG)**：完全改用 `task_dependencies`，支援原子檢查全部前置完成、連鎖失敗/恢復、多結果 Prompt 串接。
+- [x] **MCP Server 支援**：提供原生 stdio 腳本 `scripts/mcp_server.py`，支援 13 個工具操作看板。
+- [x] **Token / 花費統計面板**：`GET /api/stats` 與前端 `StatsModal.vue`（按 Agent、工作目錄、日期）。
+- [x] **任務範本庫 (Task Templates)**：`task_templates` 表、CRUD API、`TemplateModal.vue`，支援任務一鍵存為範本與瀏覽工作目錄。
+- [x] **Worktree 完整 Diff 檢視**：`GET /api/tasks/{id}/worktree/diff` 與抽屜內嵌完整 diff 檢視器。
+- [x] **任務刪除功能**：`DELETE /api/tasks/{id}`，抽屜加入「🗑️ 刪除」按鈕，連帶清理相關日誌與依賴。
+- [x] **原生地圖/資料夾選擇彈窗**：整合 `tauri-plugin-dialog`，在建立任務與範本庫可直接彈窗瀏覽選目錄。
+- [x] **模型下拉選單與前置勾選**：建立任務彈窗支援直接勾選已有任務，並依 Agent 自動帶出可用模型下拉選單。
+- [x] **任務快速複製 (Duplicate)**：抽屜一鍵複製當前任務內容並打開建立彈窗。
+- [x] **Running 即時執行碼表**：看板卡片與抽屜即時顯示 running 任務的動態累計秒數與呼吸燈。
 
 ## 待辦功能（依建議優先序）
 

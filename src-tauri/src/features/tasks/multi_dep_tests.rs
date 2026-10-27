@@ -62,14 +62,10 @@ async fn test_multi_dependencies_and_prompt_chaining() {
     .unwrap();
 
     // 3. 此時 A 與 B 均為 queued，Claim C 應該拿不到（因為前置未完成）
-    let claimed_c_early = TaskService::claim_specific(
-        &pool,
-        &task_c.id,
-        "agy",
-        &Default::default(),
-    )
-    .await
-    .unwrap();
+    let claimed_c_early =
+        TaskService::claim_specific(&pool, &task_c.id, "agy", &Default::default())
+            .await
+            .unwrap();
     assert!(claimed_c_early.is_none(), "前置任務未完成前不應被領取");
 
     // 4. 完成任務 A（回報成果），此時 B 仍未完成，C 仍不可領取
@@ -77,10 +73,16 @@ async fn test_multi_dependencies_and_prompt_chaining() {
         .await
         .unwrap()
         .unwrap();
-    TaskService::set_result(&pool, &task_a.id, &crate::features::agents::stream::RunResult {
-        text: "A 完成產出: 報告A".into(),
-        ..Default::default()
-    }).await.unwrap();
+    TaskService::set_result(
+        &pool,
+        &task_a.id,
+        &crate::features::agents::stream::RunResult {
+            text: "A 完成產出: 報告A".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     TaskService::complete_task(&pool, &task_a.id, &claimed_a.lease_id)
         .await
         .unwrap();
@@ -95,10 +97,16 @@ async fn test_multi_dependencies_and_prompt_chaining() {
         .await
         .unwrap()
         .unwrap();
-    TaskService::set_result(&pool, &task_b.id, &crate::features::agents::stream::RunResult {
-        text: "B 完成產出: 模組B".into(),
-        ..Default::default()
-    }).await.unwrap();
+    TaskService::set_result(
+        &pool,
+        &task_b.id,
+        &crate::features::agents::stream::RunResult {
+            text: "B 完成產出: 模組B".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     TaskService::complete_task(&pool, &task_b.id, &claimed_b.lease_id)
         .await
         .unwrap();

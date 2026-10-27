@@ -43,14 +43,22 @@ pub const AGENTS: &[AgentDef] = &[
 /// 參數一律放在 prompt 前面（agy 用 Go flag 解析，遇到第一個非 flag 參數就停止），
 /// 且不經過 shell，prompt 內容不會被當成指令解讀
 pub fn command_for(agent_id: &str, task: &Task) -> Option<Vec<String>> {
-    let mut argv = vec![agent_id.to_string(), "--output-format".into(), "stream-json".into()];
+    let mut argv = vec![
+        agent_id.to_string(),
+        "--output-format".into(),
+        "stream-json".into(),
+    ];
     if agent_id == "claude" {
         // claude 的 -p 搭配 stream-json 必須加 --verbose
         argv.push("--verbose".into());
     }
     // 有工作階段 ID（追加指示、或重試先前中斷的執行）時接續同一個對話
     if let Some(session) = task.session_id.as_deref() {
-        let flag = if agent_id == "claude" { "--resume" } else { "--conversation" };
+        let flag = if agent_id == "claude" {
+            "--resume"
+        } else {
+            "--conversation"
+        };
         argv.extend([flag.into(), session.into()]);
     }
     if let Some(model) = task.model.as_deref().filter(|m| !m.is_empty()) {
@@ -68,14 +76,27 @@ pub fn command_for(agent_id: &str, task: &Task) -> Option<Vec<String>> {
 }
 
 /// 處理 Agent 輸出的一行：寫日誌、記錄工作階段與結果，並廣播日誌事件
-pub async fn ingest_output(pool: &Pool<Sqlite>, event_tx: &broadcast::Sender<BoardEvent>, task_id: &str, agent: &str, line: &str) {
+pub async fn ingest_output(
+    pool: &Pool<Sqlite>,
+    event_tx: &broadcast::Sender<BoardEvent>,
+    task_id: &str,
+    agent: &str,
+    line: &str,
+) {
     for parsed in stream::parse_line(line) {
         match parsed {
             Parsed::Log(level, message) => {
-                let dto = AddTaskLogDto { agent_id: agent.into(), level: Some(level.into()), message };
+                let dto = AddTaskLogDto {
+                    agent_id: agent.into(),
+                    level: Some(level.into()),
+                    message,
+                };
                 if let Ok(log) = TaskService::add_log(pool, task_id, dto).await {
                     let payload = serde_json::to_value(&log).unwrap_or_default();
-                    let _ = event_tx.send(BoardEvent { event_type: "log_added".into(), payload });
+                    let _ = event_tx.send(BoardEvent {
+                        event_type: "log_added".into(),
+                        payload,
+                    });
                 }
             }
             Parsed::Session(id) => {
@@ -96,7 +117,12 @@ mod tests {
     use super::*;
 
     fn task(model: Option<&str>, auto_approve: bool) -> Task {
-        let mut t = Task::new("t".into(), "做點事 --model evil; rm -rf /".into(), "human".into(), None);
+        let mut t = Task::new(
+            "t".into(),
+            "做點事 --model evil; rm -rf /".into(),
+            "human".into(),
+            None,
+        );
         t.model = model.map(Into::into);
         t.auto_approve = auto_approve;
         t
@@ -124,10 +150,28 @@ mod tests {
     #[test]
     fn builds_claude_command_and_full_access_flags() {
         let argv = command_for("claude", &task(None, true)).unwrap();
-        assert_eq!(argv[..6], ["claude", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]);
+        assert_eq!(
+            argv[..6],
+            [
+                "claude",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--permission-mode",
+                "bypassPermissions"
+            ]
+        );
         assert_eq!(argv.last().unwrap(), "做點事 --model evil; rm -rf /");
         let agy = command_for("agy", &task(Some(""), true)).unwrap();
-        assert_eq!(agy[..4], ["agy", "--output-format", "stream-json", "--dangerously-skip-permissions"]);
+        assert_eq!(
+            agy[..4],
+            [
+                "agy",
+                "--output-format",
+                "stream-json",
+                "--dangerously-skip-permissions"
+            ]
+        );
     }
 
     #[test]
@@ -135,9 +179,15 @@ mod tests {
         let mut t = task(None, false);
         t.session_id = Some("sess-1".into());
         let claude = command_for("claude", &t).unwrap();
-        assert!(claude.windows(2).any(|w| w == ["--resume", "sess-1"]), "{claude:?}");
+        assert!(
+            claude.windows(2).any(|w| w == ["--resume", "sess-1"]),
+            "{claude:?}"
+        );
         let agy = command_for("agy", &t).unwrap();
-        assert!(agy.windows(2).any(|w| w == ["--conversation", "sess-1"]), "{agy:?}");
+        assert!(
+            agy.windows(2).any(|w| w == ["--conversation", "sess-1"]),
+            "{agy:?}"
+        );
         assert_eq!(agy[agy.len() - 2], "-p");
     }
 

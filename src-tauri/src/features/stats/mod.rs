@@ -61,7 +61,10 @@ pub struct StatsQuery {
 pub struct StatsService;
 
 impl StatsService {
-    pub async fn get_stats(pool: &Pool<Sqlite>, query: StatsQuery) -> Result<FullStatsResponse, sqlx::Error> {
+    pub async fn get_stats(
+        pool: &Pool<Sqlite>,
+        query: StatsQuery,
+    ) -> Result<FullStatsResponse, sqlx::Error> {
         let from_date = query.from.unwrap_or_else(|| "1970-01-01".to_string());
         // 純日期（YYYY-MM-DD）視為包含當天整天，否則字串比較會漏掉當天任務
         let to_date = match query.to {
@@ -170,4 +173,3 @@ impl StatsService {
 
 #[cfg(test)]
 mod tests;
-

@@ -18,6 +18,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "cancel"): void;
+  (e: "delete"): void;
+  (e: "duplicate"): void;
+  (e: "save-template"): void;
   (e: "requeue", fresh: boolean): void;
   (e: "followup", prompt: string, mode: "spawn" | "dispatch"): void;
   (e: "select", taskId: string): void;
@@ -115,12 +118,36 @@ const logLevelClass = (level: string) =>
           從頭重試
         </button>
         <button
+          @click="emit('duplicate')"
+          title="以這個任務為底建立新任務"
+          class="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+        >
+          <Icon name="copy" :size="12" />
+          <span>複製</span>
+        </button>
+        <button
+          @click="emit('save-template')"
+          title="將此任務的設定存為範本"
+          class="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+        >
+          <span>⭐</span>
+          <span>存為範本</span>
+        </button>
+        <button
           v-if="task.status === 'queued' || task.status === 'running'"
           @click="emit('cancel')"
           title="取消任務（執行中的 Agent 會被中止）"
-          class="h-7 rounded-md px-2 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+          class="h-7 rounded-md px-2 text-xs font-medium text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
         >
           取消任務
+        </button>
+        <button
+          @click="emit('delete')"
+          title="徹底刪除此任務及相關紀錄"
+          class="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+        >
+          <Icon name="trash" :size="12" />
+          <span>刪除</span>
         </button>
         <button
           @click="emit('close')"

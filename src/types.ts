@@ -55,6 +55,10 @@ export interface CreateTaskPayload {
   creator: string;
   assigned_agent?: string | null;
   dependency_ids?: string[];
+  workdir?: string | null;
+  model?: string | null;
+  auto_approve?: boolean;
+  isolate?: boolean;
 }
 
 export interface AgentDef {

@@ -3,7 +3,7 @@ pub mod features;
 pub mod server;
 
 use serde::Serialize;
-use server::{start_background_workers, start_http_server, BoardEvent, ServerState};
+use server::{BoardEvent, ServerState, start_background_workers, start_http_server};
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::broadcast;
@@ -21,7 +21,10 @@ fn get_api_config(config: tauri::State<ApiConfig>) -> ApiConfig {
 }
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// 初始化資料庫、背景逾時檢查與 HTTP API；Tauri App 與 headless 範例共用
@@ -39,8 +42,16 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
     // 方案 A 同時執行的子程序上限，超過時請改派發給 Runner
     let max_parallel = env_or("AGENT_BOARD_MAX_PARALLEL", 4usize);
     // worktree 等資料與資料庫放在同一個資料夾
-    let data_dir = std::path::Path::new(db_path).parent().map_or_else(|| ".".into(), |p| p.to_path_buf());
-    let spawner = features::execution::Spawner::new(pool.clone(), event_tx.clone(), heartbeat_every, max_parallel, data_dir.clone());
+    let data_dir = std::path::Path::new(db_path)
+        .parent()
+        .map_or_else(|| ".".into(), |p| p.to_path_buf());
+    let spawner = features::execution::Spawner::new(
+        pool.clone(),
+        event_tx.clone(),
+        heartbeat_every,
+        max_parallel,
+        data_dir.clone(),
+    );
     let server_state = ServerState {
         pool,
         event_tx,
@@ -50,7 +61,10 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
         data_dir,
     };
 
-    println!("[*] Agent Board API Server running on http://127.0.0.1:{}", port);
+    println!(
+        "[*] Agent Board API Server running on http://127.0.0.1:{}",
+        port
+    );
     if let Err(e) = start_http_server(port, server_state).await {
         eprintln!("HTTP Server error: {}", e);
     }
@@ -59,6 +73,7 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![get_api_config])
@@ -66,7 +81,10 @@ pub fn run() {
             // token 與資料庫都存在 App 資料夾（Linux: ~/.local/share/com.naxo.agent-board/），Runner 從這裡讀 token
             let data_dir = app.path().app_data_dir()?;
             let token_path = data_dir.join("api_token");
-            let db_path = data_dir.join("agent_board.db").to_string_lossy().into_owned();
+            let db_path = data_dir
+                .join("agent_board.db")
+                .to_string_lossy()
+                .into_owned();
             let token = server::auth::load_or_create_token(&token_path)?;
             println!("[*] API token file: {}", token_path.display());
             println!("[*] Database: {db_path}");

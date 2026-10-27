@@ -122,6 +122,15 @@ export function useTasks() {
   // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）；fresh 捨棄工作階段，從頭執行
   const requeueTask = (taskId: string, fresh = false) => postTaskAction(taskId, "requeue", { fresh });
 
+  const deleteTask = async (taskId: string) => {
+    const res = await api(`/api/tasks/${taskId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("刪除任務失敗");
+    tasks.value = tasks.value.filter((t) => t.id !== taskId);
+    if (selectedTaskId.value === taskId) {
+      selectedTaskId.value = null;
+    }
+  };
+
   // 追加指示：建立接續原工作階段的新任務，再依 mode 立即執行或派發給 Runner
   const followupTask = async (taskId: string, prompt: string, mode: "spawn" | "dispatch") => {
     const res = await api(`/api/tasks/${taskId}/followup`, { method: "POST", body: JSON.stringify({ prompt }) });
@@ -229,6 +238,7 @@ export function useTasks() {
       eventSource.addEventListener("task_failed", notifyFinished(false));
       eventSource.addEventListener("task_recovered", handleUpdate);
       eventSource.addEventListener("task_requeued", handleUpdate);
+      eventSource.addEventListener("task_deleted", handleUpdate);
       eventSource.addEventListener("worktree_changed", handleUpdate);
       eventSource.addEventListener("runners_changed", fetchRunners);
       eventSource.addEventListener("artifact_created", (e) => {
@@ -306,6 +316,7 @@ export function useTasks() {
     dispatchTask,
     cancelTask,
     requeueTask,
+    deleteTask,
     search,
     followupTask,
     activeTaskArtifacts,

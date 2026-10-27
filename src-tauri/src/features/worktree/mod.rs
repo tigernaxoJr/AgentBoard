@@ -34,16 +34,26 @@ async fn git(dir: impl AsRef<Path>, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
-        Err(format!("git {} 失敗：{}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+        Err(format!(
+            "git {} 失敗：{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
 }
 
 fn lines(s: String) -> Vec<String> {
-    s.lines().filter(|l| !l.is_empty()).map(Into::into).collect()
+    s.lines()
+        .filter(|l| !l.is_empty())
+        .map(Into::into)
+        .collect()
 }
 
 async fn repo_root(task: &Task) -> Result<PathBuf, String> {
-    let workdir = task.workdir.as_deref().ok_or("隔離執行需要指定工作目錄（git repo 內的路徑）")?;
+    let workdir = task
+        .workdir
+        .as_deref()
+        .ok_or("隔離執行需要指定工作目錄（git repo 內的路徑）")?;
     git(workdir, &["rev-parse", "--show-toplevel"])
         .await
         .map(PathBuf::from)
@@ -51,7 +61,11 @@ async fn repo_root(task: &Task) -> Result<PathBuf, String> {
 }
 
 /// 領取後呼叫：需要隔離就建立（或沿用上次的）worktree，並把 run_dir 指到 worktree 內對應的目錄
-pub async fn prepare(pool: &Pool<Sqlite>, claimed: &mut ClaimedTask, root: &Path) -> Result<(), String> {
+pub async fn prepare(
+    pool: &Pool<Sqlite>,
+    claimed: &mut ClaimedTask,
+    root: &Path,
+) -> Result<(), String> {
     if !claimed.task.isolate {
         return Ok(());
     }
@@ -62,12 +76,23 @@ pub async fn prepare(pool: &Pool<Sqlite>, claimed: &mut ClaimedTask, root: &Path
     let relative = workdir
         .canonicalize()
         .ok()
-        .and_then(|w| repo.canonicalize().ok().and_then(|r| w.strip_prefix(r).ok().map(Path::to_path_buf)))
+        .and_then(|w| {
+            repo.canonicalize()
+                .ok()
+                .and_then(|r| w.strip_prefix(r).ok().map(Path::to_path_buf))
+        })
         .unwrap_or_default();
 
     let short = &task.id[..8];
-    let branch = task.branch.clone().unwrap_or_else(|| format!("agent-board/{short}"));
-    let path = task.worktree_path.clone().map(PathBuf::from).unwrap_or_else(|| root.join("worktrees").join(short));
+    let branch = task
+        .branch
+        .clone()
+        .unwrap_or_else(|| format!("agent-board/{short}"));
+    let path = task
+        .worktree_path
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("worktrees").join(short));
 
     let base = if path.exists() {
         // 重試時沿用上次的 worktree，接續做到一半的內容
@@ -77,9 +102,20 @@ pub async fn prepare(pool: &Pool<Sqlite>, claimed: &mut ClaimedTask, root: &Path
             Some(base) => base.clone(),
             None => git(&repo, &["rev-parse", "HEAD"]).await?,
         };
-        std::fs::create_dir_all(root.join("worktrees")).map_err(|e| format!("無法建立 worktree 目錄：{e}"))?;
+        std::fs::create_dir_all(root.join("worktrees"))
+            .map_err(|e| format!("無法建立 worktree 目錄：{e}"))?;
         let path_str = path.to_string_lossy();
-        let branch_exists = git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok();
+        let branch_exists = git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .await
+        .is_ok();
         if branch_exists {
             git(&repo, &["worktree", "add", &path_str, &branch]).await?;
         } else {
@@ -119,7 +155,15 @@ pub async fn status(task: &Task) -> Result<WorktreeStatus, String> {
     } else {
         Default::default()
     };
-    Ok(WorktreeStatus { branch, path, base_commit, exists, commits, changes, diff_stat })
+    Ok(WorktreeStatus {
+        branch,
+        path,
+        base_commit,
+        exists,
+        commits,
+        changes,
+        diff_stat,
+    })
 }
 
 /// 合併回 repo 目前的分支：先 commit worktree 內未 commit 的變更，再 `merge --no-ff`
@@ -173,8 +217,14 @@ pub async fn diff(task: &Task, file_path: Option<&str>) -> Result<String, String
         untracked.push("--");
         untracked.push(fp);
     }
-    for rel in git(&path, &untracked).await?.lines().filter(|l| !l.is_empty()) {
-        let Ok(bytes) = std::fs::read(Path::new(&path).join(rel)) else { continue };
+    for rel in git(&path, &untracked)
+        .await?
+        .lines()
+        .filter(|l| !l.is_empty())
+    {
+        let Ok(bytes) = std::fs::read(Path::new(&path).join(rel)) else {
+            continue;
+        };
         if !out.is_empty() {
             out.push('\n');
         }
@@ -203,7 +253,9 @@ pub async fn discard(pool: &Pool<Sqlite>, task: &Task) -> Result<(), String> {
         git(&repo, &["worktree", "prune"]).await?;
     }
     let _ = git(&repo, &["branch", "-D", &branch]).await;
-    TaskService::set_worktree(pool, &task.id, None).await.map_err(|e| e.to_string())
+    TaskService::set_worktree(pool, &task.id, None)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -226,7 +278,11 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
-        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
         let dir = std::env::temp_dir().join(format!("agent_board_wt_{}", uuid::Uuid::new_v4()));
         let (repo, root) = (dir.join("repo"), dir.join("data"));
@@ -242,14 +298,30 @@ mod tests {
         ] {
             git(&repo, args).await.unwrap();
         }
-        Fixture { pool, dir, repo, root }
+        Fixture {
+            pool,
+            dir,
+            repo,
+            root,
+        }
     }
 
     async fn claim_isolated(f: &Fixture, workdir: &Path) -> ClaimedTask {
-        let dto = CreateTaskDto { title: "改 a.txt".into(), prompt: "p".into(), ..Default::default() };
+        let dto = CreateTaskDto {
+            title: "改 a.txt".into(),
+            prompt: "p".into(),
+            ..Default::default()
+        };
         let task = TaskService::create_task(&f.pool, dto).await.unwrap();
-        let opts = RunOptions { workdir: Some(workdir.to_string_lossy().into()), isolate: Some(true), ..Default::default() };
-        let mut claimed = TaskService::claim_specific(&f.pool, &task.id, "agy", &opts).await.unwrap().unwrap();
+        let opts = RunOptions {
+            workdir: Some(workdir.to_string_lossy().into()),
+            isolate: Some(true),
+            ..Default::default()
+        };
+        let mut claimed = TaskService::claim_specific(&f.pool, &task.id, "agy", &opts)
+            .await
+            .unwrap()
+            .unwrap();
         prepare(&f.pool, &mut claimed, &f.root).await.unwrap();
         claimed
     }
@@ -268,7 +340,10 @@ mod tests {
         assert_eq!(PathBuf::from(claimed.run_dir.unwrap()), wt.join("sub"));
         assert!(wt.join("sub/b.txt").exists());
         let saved = reload(&f, &claimed.task.id).await;
-        assert_eq!(saved.branch.as_deref(), Some(format!("agent-board/{}", &claimed.task.id[..8]).as_str()));
+        assert_eq!(
+            saved.branch.as_deref(),
+            Some(format!("agent-board/{}", &claimed.task.id[..8]).as_str())
+        );
     }
 
     #[tokio::test]
@@ -298,10 +373,20 @@ mod tests {
 
         let msg = merge(&f.pool, &task).await.unwrap();
         assert_eq!(msg, "已合併 1 個 commit");
-        assert_eq!(std::fs::read_to_string(f.repo.join("a.txt")).unwrap(), "one\ntwo\n");
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
         assert!(f.repo.join("new.txt").exists());
         assert!(!wt.exists());
-        assert!(git(&f.repo, &["rev-parse", "--verify", "--quiet", &task.branch.unwrap()]).await.is_err());
+        assert!(
+            git(
+                &f.repo,
+                &["rev-parse", "--verify", "--quiet", &task.branch.unwrap()]
+            )
+            .await
+            .is_err()
+        );
         assert!(reload(&f, &claimed.task.id).await.worktree_path.is_none());
     }
 
@@ -313,12 +398,22 @@ mod tests {
         std::fs::write(wt.join("a.txt"), "agent version\n").unwrap();
         // 主分支同時改了同一行
         std::fs::write(f.repo.join("a.txt"), "human version\n").unwrap();
-        git(&f.repo, &["commit", "-qam", "human edit"]).await.unwrap();
+        git(&f.repo, &["commit", "-qam", "human edit"])
+            .await
+            .unwrap();
 
         let task = reload(&f, &claimed.task.id).await;
         assert!(merge(&f.pool, &task).await.is_err());
-        assert_eq!(std::fs::read_to_string(f.repo.join("a.txt")).unwrap(), "human version\n");
-        assert!(git(&f.repo, &["status", "--porcelain"]).await.unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("a.txt")).unwrap(),
+            "human version\n"
+        );
+        assert!(
+            git(&f.repo, &["status", "--porcelain"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(wt.exists());
         assert!(reload(&f, &claimed.task.id).await.worktree_path.is_some());
     }
@@ -331,7 +426,12 @@ mod tests {
         discard(&f.pool, &task).await.unwrap();
 
         assert!(!Path::new(&task.worktree_path.unwrap()).exists());
-        assert!(git(&f.repo, &["branch", "--list", &task.branch.unwrap()]).await.unwrap().is_empty());
+        assert!(
+            git(&f.repo, &["branch", "--list", &task.branch.unwrap()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -339,10 +439,21 @@ mod tests {
         let f = fixture().await;
         let outside = f.dir.join("not-a-repo");
         std::fs::create_dir_all(&outside).unwrap();
-        let dto = CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() };
+        let dto = CreateTaskDto {
+            title: "t".into(),
+            prompt: "p".into(),
+            ..Default::default()
+        };
         let task = TaskService::create_task(&f.pool, dto).await.unwrap();
-        let opts = RunOptions { workdir: Some(outside.to_string_lossy().into()), isolate: Some(true), ..Default::default() };
-        let mut claimed = TaskService::claim_specific(&f.pool, &task.id, "agy", &opts).await.unwrap().unwrap();
+        let opts = RunOptions {
+            workdir: Some(outside.to_string_lossy().into()),
+            isolate: Some(true),
+            ..Default::default()
+        };
+        let mut claimed = TaskService::claim_specific(&f.pool, &task.id, "agy", &opts)
+            .await
+            .unwrap()
+            .unwrap();
         let err = prepare(&f.pool, &mut claimed, &f.root).await.unwrap_err();
         assert!(err.contains("不在 git repo 內"), "{err}");
     }

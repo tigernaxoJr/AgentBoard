@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-use tokio::sync::{broadcast, oneshot, Semaphore};
+use tokio::sync::{Semaphore, broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 #[derive(Debug)]
@@ -79,7 +79,11 @@ impl Spawner {
             return Err(SpawnError::UnsupportedAgent);
         }
         // 先佔名額再領取，額滿時任務維持在佇列中
-        let slot = self.slots.clone().try_acquire_owned().map_err(|_| SpawnError::Busy)?;
+        let slot = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| SpawnError::Busy)?;
         let mut claimed = TaskService::claim_specific(&self.pool, task_id, &agent_id, &opts)
             .await?
             .ok_or(SpawnError::NotClaimable)?;
@@ -88,9 +92,15 @@ impl Spawner {
             self.finish(task_id, &claimed.lease_id, false).await;
             return Err(SpawnError::Worktree(e));
         }
-        let argv = claimed.command.clone().ok_or(SpawnError::UnsupportedAgent)?;
+        let argv = claimed
+            .command
+            .clone()
+            .ok_or(SpawnError::UnsupportedAgent)?;
 
-        self.emit("task_claimed", serde_json::to_value(&claimed.task).unwrap_or_default());
+        self.emit(
+            "task_claimed",
+            serde_json::to_value(&claimed.task).unwrap_or_default(),
+        );
         let task = claimed.task.clone();
         let handle = self.start(claimed, argv);
         tokio::spawn(async move {
@@ -112,7 +122,10 @@ impl Spawner {
     pub fn start(&self, claimed: ClaimedTask, argv: Vec<String>) -> JoinHandle<()> {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let task_id = claimed.task.id.clone();
-        self.running.lock().unwrap().insert(task_id.clone(), cancel_tx);
+        self.running
+            .lock()
+            .unwrap()
+            .insert(task_id.clone(), cancel_tx);
 
         let this = self.clone();
         tokio::spawn(async move {
@@ -121,7 +134,12 @@ impl Spawner {
         })
     }
 
-    async fn supervise(&self, claimed: ClaimedTask, argv: Vec<String>, mut cancel_rx: oneshot::Receiver<()>) {
+    async fn supervise(
+        &self,
+        claimed: ClaimedTask,
+        argv: Vec<String>,
+        mut cancel_rx: oneshot::Receiver<()>,
+    ) {
         let task_id = claimed.task.id.as_str();
         let lease_id = claimed.lease_id.as_str();
         let agent = claimed.task.assigned_agent.clone().unwrap_or_default();
@@ -133,8 +151,16 @@ impl Spawner {
 
         // prompt 是最後一個參數，日誌只記錄指令本身
         let shown = argv[..argv.len().saturating_sub(1)].join(" ");
-        self.log(task_id, &agent, "INFO", format!("執行：{shown}（工作目錄：{}）", workdir.as_deref().unwrap_or(".")))
-            .await;
+        self.log(
+            task_id,
+            &agent,
+            "INFO",
+            format!(
+                "執行：{shown}（工作目錄：{}）",
+                workdir.as_deref().unwrap_or(".")
+            ),
+        )
+        .await;
 
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
@@ -153,15 +179,25 @@ impl Spawner {
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
-                self.log(task_id, &agent, "ERROR", format!("無法啟動 {}：{e}", argv[0])).await;
+                self.log(
+                    task_id,
+                    &agent,
+                    "ERROR",
+                    format!("無法啟動 {}：{e}", argv[0]),
+                )
+                .await;
                 self.finish(task_id, lease_id, false).await;
                 return;
             }
         };
 
         let readers = [
-            child.stdout.take().map(|out| tokio::spawn(self.clone().pipe_lines(task_id.into(), agent.clone(), out))),
-            child.stderr.take().map(|err| tokio::spawn(self.clone().pipe_lines(task_id.into(), agent.clone(), err))),
+            child.stdout.take().map(|out| {
+                tokio::spawn(self.clone().pipe_lines(task_id.into(), agent.clone(), out))
+            }),
+            child.stderr.take().map(|err| {
+                tokio::spawn(self.clone().pipe_lines(task_id.into(), agent.clone(), err))
+            }),
         ];
 
         let mut heartbeat = tokio::time::interval(self.heartbeat_every);
@@ -186,27 +222,46 @@ impl Spawner {
         // 等輸出讀完，日誌才會在狀態變更之前寫完；殘留的孫程序可能一直佔著管線，最多等 2 秒
         for reader in readers.into_iter().flatten() {
             let abort = reader.abort_handle();
-            if tokio::time::timeout(Duration::from_secs(2), reader).await.is_err() {
+            if tokio::time::timeout(Duration::from_secs(2), reader)
+                .await
+                .is_err()
+            {
                 abort.abort();
             }
         }
 
         match outcome {
             Outcome::Exited(Ok(status)) if status.success() => {
-                self.log(task_id, &agent, "INFO", "任務已成功完成".into()).await;
+                self.log(task_id, &agent, "INFO", "任務已成功完成".into())
+                    .await;
                 self.finish(task_id, lease_id, true).await;
             }
             Outcome::Exited(Ok(status)) => {
-                let code = status.code().map_or("無（被訊號終止）".to_string(), |c| c.to_string());
-                self.log(task_id, &agent, "ERROR", format!("程序異常結束，結束碼：{code}")).await;
+                let code = status
+                    .code()
+                    .map_or("無（被訊號終止）".to_string(), |c| c.to_string());
+                self.log(
+                    task_id,
+                    &agent,
+                    "ERROR",
+                    format!("程序異常結束，結束碼：{code}"),
+                )
+                .await;
                 self.finish(task_id, lease_id, false).await;
             }
             Outcome::Exited(Err(e)) => {
-                self.log(task_id, &agent, "ERROR", format!("等待程序時發生錯誤：{e}")).await;
+                self.log(task_id, &agent, "ERROR", format!("等待程序時發生錯誤：{e}"))
+                    .await;
                 self.finish(task_id, lease_id, false).await;
             }
             Outcome::Aborted => {
-                self.log(task_id, &agent, "WARN", "已中止：任務被取消或租約已被回收".into()).await;
+                self.log(
+                    task_id,
+                    &agent,
+                    "WARN",
+                    "已中止：任務被取消或租約已被回收".into(),
+                )
+                .await;
             }
         }
     }
@@ -232,21 +287,30 @@ impl Spawner {
     }
 
     async fn log(&self, task_id: &str, agent: &str, level: &str, message: String) {
-        let dto = AddTaskLogDto { agent_id: agent.into(), level: Some(level.into()), message };
+        let dto = AddTaskLogDto {
+            agent_id: agent.into(),
+            level: Some(level.into()),
+            message,
+        };
         if let Ok(log) = TaskService::add_log(&self.pool, task_id, dto).await {
             self.emit("log_added", serde_json::to_value(&log).unwrap_or_default());
         }
     }
 
     fn emit(&self, event_type: &str, payload: serde_json::Value) {
-        let _ = self.event_tx.send(BoardEvent { event_type: event_type.into(), payload });
+        let _ = self.event_tx.send(BoardEvent {
+            event_type: event_type.into(),
+            payload,
+        });
     }
 }
 
 /// 從桌面捷徑啟動時 PATH 常常不含 ~/.local/bin 等目錄，導致找不到 agy / claude
 /// 在既有 PATH 後面補上 CLI 常見的安裝位置（已存在的不重複加入）
 fn agent_path() -> OsString {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let extras = [
         home.as_ref().map(|h| h.join(".local/bin")),
@@ -278,17 +342,40 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn setup(heartbeat_ms: u64) -> (Spawner, Pool<Sqlite>) {
-        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
         let (event_tx, _) = broadcast::channel(100);
-        (Spawner::new(pool.clone(), event_tx, Duration::from_millis(heartbeat_ms), 1, std::env::temp_dir()), pool)
+        (
+            Spawner::new(
+                pool.clone(),
+                event_tx,
+                Duration::from_millis(heartbeat_ms),
+                1,
+                std::env::temp_dir(),
+            ),
+            pool,
+        )
     }
 
     async fn claim(pool: &Pool<Sqlite>, workdir: Option<&str>) -> ClaimedTask {
-        let dto = CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() };
+        let dto = CreateTaskDto {
+            title: "t".into(),
+            prompt: "p".into(),
+            ..Default::default()
+        };
         let task = TaskService::create_task(pool, dto).await.unwrap();
-        let opts = RunOptions { workdir: workdir.map(Into::into), ..Default::default() };
-        TaskService::claim_specific(pool, &task.id, "agy", &opts).await.unwrap().unwrap()
+        let opts = RunOptions {
+            workdir: workdir.map(Into::into),
+            ..Default::default()
+        };
+        TaskService::claim_specific(pool, &task.id, "agy", &opts)
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     fn sh(script: &str) -> Vec<String> {
@@ -297,13 +384,25 @@ mod tests {
     }
 
     async fn status_and_logs(pool: &Pool<Sqlite>, id: &str) -> (String, Vec<String>) {
-        let status = TaskService::get_task(pool, id).await.unwrap().unwrap().status;
-        let logs = TaskService::get_logs(pool, id).await.unwrap().into_iter().map(|l| l.message).collect();
+        let status = TaskService::get_task(pool, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status;
+        let logs = TaskService::get_logs(pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|l| l.message)
+            .collect();
         (status, logs)
     }
 
     async fn within(handle: JoinHandle<()>) {
-        tokio::time::timeout(Duration::from_secs(5), handle).await.expect("spawner did not finish").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("spawner did not finish")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -316,7 +415,10 @@ mod tests {
         let (status, logs) = status_and_logs(&pool, &id).await;
         assert_eq!(status, "completed");
         for expected in ["hello", "warn-line", "/tmp"] {
-            assert!(logs.iter().any(|l| l == expected), "missing log {expected}: {logs:?}");
+            assert!(
+                logs.iter().any(|l| l == expected),
+                "missing log {expected}: {logs:?}"
+            );
         }
     }
 
@@ -337,11 +439,18 @@ mod tests {
         let (spawner, pool) = setup(1000).await;
         let claimed = claim(&pool, None).await;
         let id = claimed.task.id.clone();
-        within(spawner.start(claimed, vec!["definitely-not-a-binary".into(), "prompt".into()])).await;
+        within(spawner.start(
+            claimed,
+            vec!["definitely-not-a-binary".into(), "prompt".into()],
+        ))
+        .await;
 
         let (status, logs) = status_and_logs(&pool, &id).await;
         assert_eq!(status, "failed");
-        assert!(logs.iter().any(|l| l.contains("無法啟動 definitely-not-a-binary")));
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("無法啟動 definitely-not-a-binary"))
+        );
     }
 
     #[tokio::test]
@@ -371,7 +480,13 @@ mod tests {
         // 只作廢租約、不呼叫 kill：Spawner 要靠心跳被拒自行中止
         TaskService::cancel_task(&pool, &id).await.unwrap();
         within(handle).await;
-        assert!(status_and_logs(&pool, &id).await.1.iter().any(|l| l.contains("已中止")));
+        assert!(
+            status_and_logs(&pool, &id)
+                .await
+                .1
+                .iter()
+                .any(|l| l.contains("已中止"))
+        );
     }
 
     #[tokio::test]
@@ -405,9 +520,16 @@ mod tests {
         let path = agent_path();
         let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
         let local_bin = PathBuf::from(std::env::var("HOME").unwrap()).join(".local/bin");
-        let before = std::env::var_os("PATH").map_or(0, |p| std::env::split_paths(&p).filter(|d| *d == local_bin).count());
+        let before = std::env::var_os("PATH").map_or(0, |p| {
+            std::env::split_paths(&p)
+                .filter(|d| *d == local_bin)
+                .count()
+        });
         // 原本沒有就補一個，原本有就不再加
-        assert_eq!(dirs.iter().filter(|d| **d == local_bin).count(), before.max(1));
+        assert_eq!(
+            dirs.iter().filter(|d| **d == local_bin).count(),
+            before.max(1)
+        );
         assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
     }
 
@@ -416,26 +538,72 @@ mod tests {
         let (spawner, pool) = setup(1000).await;
         // 佔掉唯一的名額
         let _held = spawner.slots.clone().try_acquire_owned().unwrap();
-        let task = TaskService::create_task(&pool, CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() })
-            .await
-            .unwrap();
-        let opts = RunOptions { agent_id: Some("agy".into()), ..Default::default() };
-        assert!(matches!(spawner.spawn(&task.id, opts).await, Err(SpawnError::Busy)));
+        let task = TaskService::create_task(
+            &pool,
+            CreateTaskDto {
+                title: "t".into(),
+                prompt: "p".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let opts = RunOptions {
+            agent_id: Some("agy".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            spawner.spawn(&task.id, opts).await,
+            Err(SpawnError::Busy)
+        ));
         // 額滿時不能把任務領走
-        assert_eq!(TaskService::get_task(&pool, &task.id).await.unwrap().unwrap().status, "queued");
+        assert_eq!(
+            TaskService::get_task(&pool, &task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "queued"
+        );
     }
 
     #[tokio::test]
     async fn spawn_rejects_unknown_agent_and_unclaimable_task() {
         let (spawner, pool) = setup(1000).await;
-        let task = TaskService::create_task(&pool, CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() })
-            .await
-            .unwrap();
-        let rogue = RunOptions { agent_id: Some("rogue".into()), ..Default::default() };
-        assert!(matches!(spawner.spawn(&task.id, rogue).await, Err(SpawnError::UnsupportedAgent)));
-        assert_eq!(TaskService::get_task(&pool, &task.id).await.unwrap().unwrap().status, "queued");
+        let task = TaskService::create_task(
+            &pool,
+            CreateTaskDto {
+                title: "t".into(),
+                prompt: "p".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let rogue = RunOptions {
+            agent_id: Some("rogue".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            spawner.spawn(&task.id, rogue).await,
+            Err(SpawnError::UnsupportedAgent)
+        ));
+        assert_eq!(
+            TaskService::get_task(&pool, &task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "queued"
+        );
 
-        let missing = RunOptions { agent_id: Some("agy".into()), ..Default::default() };
-        assert!(matches!(spawner.spawn("no-such-task", missing).await, Err(SpawnError::NotClaimable)));
+        let missing = RunOptions {
+            agent_id: Some("agy".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            spawner.spawn("no-such-task", missing).await,
+            Err(SpawnError::NotClaimable)
+        ));
     }
 }

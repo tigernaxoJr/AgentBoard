@@ -4,7 +4,10 @@ use std::path::Path;
 use std::time::Duration;
 
 pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
-    if let Some(parent) = Path::new(db_path).parent().filter(|p| !p.as_os_str().is_empty()) {
+    if let Some(parent) = Path::new(db_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent)?;
     }
 
@@ -16,7 +19,10 @@ pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
         .foreign_keys(true)
         .busy_timeout(Duration::from_secs(5));
 
-    let pool = SqlitePoolOptions::new().max_connections(10).connect_with(options).await?;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(10)
+        .connect_with(options)
+        .await?;
 
     migrate(&pool).await?;
     Ok(pool)
@@ -133,12 +139,16 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("output_tokens", "output_tokens INTEGER"),
         ("duration_ms", "duration_ms INTEGER"),
     ] {
-        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?")
-            .bind(column)
-            .fetch_one(pool)
-            .await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?",
+        )
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
         if !exists {
-            sqlx::query(&format!("ALTER TABLE tasks ADD COLUMN {ddl}")).execute(pool).await?;
+            sqlx::query(&format!("ALTER TABLE tasks ADD COLUMN {ddl}"))
+                .execute(pool)
+                .await?;
         }
     }
 

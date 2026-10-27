@@ -54,9 +54,12 @@ impl ArtifactService {
         Ok(artifact)
     }
 
-    pub async fn list_by_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<Vec<Artifact>, sqlx::Error> {
+    pub async fn list_by_task(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+    ) -> Result<Vec<Artifact>, sqlx::Error> {
         let items = sqlx::query_as::<_, Artifact>(
-            "SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at DESC"
+            "SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at DESC",
         )
         .bind(task_id)
         .fetch_all(pool)

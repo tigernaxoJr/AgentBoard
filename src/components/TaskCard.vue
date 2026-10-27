@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import type { Task } from "../types";
 import { agentMeta, formatCost, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
@@ -15,6 +15,35 @@ const emit = defineEmits<{
 }>();
 
 const copied = ref(false);
+const nowSec = ref(Date.now());
+let timer: ReturnType<typeof setInterval> | undefined;
+
+onMounted(() => {
+  if (props.task.status === "running") {
+    timer = setInterval(() => {
+      nowSec.value = Date.now();
+    }, 1000);
+  }
+});
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer);
+});
+
+// 即時累積執行時間碼表（格式：mm:ss 或 hh:mm:ss）
+const runningDuration = computed(() => {
+  if (props.task.status !== "running") return null;
+  const start = new Date(props.task.updated_at).getTime();
+  const diffSec = Math.max(0, Math.floor((nowSec.value - start) / 1000));
+  const m = Math.floor(diffSec / 60);
+  const s = diffSec % 60;
+  if (m < 60) {
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return `${h}:${String(remM).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+});
 
 const copyPrompt = async () => {
   try {
@@ -65,6 +94,10 @@ const copyPrompt = async () => {
           {{ task.creator.slice(0, 1) }}
         </span>
         <span class="truncate">{{ task.creator }} · {{ relativeTime(task.status === 'running' ? task.last_heartbeat_at : task.updated_at) }}</span>
+        <span v-if="runningDuration" class="inline-flex items-center gap-1 font-mono text-[10px] text-sky-500 font-semibold" title="即時執行累計耗時">
+          <span class="inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-ping"></span>
+          {{ runningDuration }}
+        </span>
         <span v-if="task.dependency_ids.length" class="text-amber-500" :title="`依賴 ${task.dependency_ids.map((d) => '#' + d.slice(0, 8)).join(', ')}`">
           <Icon name="link" :size="12" />
         </span>

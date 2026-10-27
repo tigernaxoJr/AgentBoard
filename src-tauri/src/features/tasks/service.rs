@@ -61,9 +61,17 @@ impl ClaimedTask {
         let rendered_prompt = Self::render_prompt(pool, &task).await?;
         let mut runnable = task.clone();
         runnable.prompt = rendered_prompt;
-        let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &runnable));
+        let command = task
+            .assigned_agent
+            .as_deref()
+            .and_then(|agent| agents::command_for(agent, &runnable));
         let run_dir = task.workdir.clone();
-        Ok(Self { task, lease_id, command, run_dir })
+        Ok(Self {
+            task,
+            lease_id,
+            command,
+            run_dir,
+        })
     }
 
     async fn render_prompt(pool: &Pool<Sqlite>, task: &Task) -> Result<String, sqlx::Error> {
@@ -88,7 +96,10 @@ impl ClaimedTask {
         for (id, res) in &rows {
             let short = if id.len() >= 8 { &id[..8] } else { id.as_str() };
             let key = format!("{{{{dep.{}.result}}}}", short);
-            let val = res.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（無結果）");
+            let val = res
+                .as_deref()
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or("（無結果）");
             prompt = prompt.replace(&key, val);
         }
 
@@ -97,12 +108,20 @@ impl ClaimedTask {
             let combined = if rows.is_empty() {
                 "（無前置任務結果）".to_string()
             } else if rows.len() == 1 {
-                rows[0].1.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（前置任務沒有回報結果）").to_string()
+                rows[0]
+                    .1
+                    .as_deref()
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or("（前置任務沒有回報結果）")
+                    .to_string()
             } else {
                 rows.iter()
                     .map(|(id, res)| {
                         let short = if id.len() >= 8 { &id[..8] } else { id.as_str() };
-                        let val = res.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（無結果）");
+                        let val = res
+                            .as_deref()
+                            .filter(|r| !r.trim().is_empty())
+                            .unwrap_or("（無結果）");
                         format!("### 前置任務 #{short} 結果：\n{val}")
                     })
                     .collect::<Vec<_>>()
@@ -117,7 +136,9 @@ impl ClaimedTask {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RequeueResult {
-    Requeued { downstream: u64 },
+    Requeued {
+        downstream: u64,
+    },
     /// 任務不存在或不是 failed
     NotFailed,
     /// 前置任務也是 failed，重新排隊也永遠領不到
@@ -222,15 +243,20 @@ impl TaskService {
         Ok(task)
     }
 
-    async fn populate_dependencies(pool: &Pool<Sqlite>, tasks: &mut [Task]) -> Result<(), sqlx::Error> {
-        if tasks.is_empty() { return Ok(()); }
-        let deps: Vec<(String, String)> = sqlx::query_as(
-            "SELECT task_id, depends_on_task_id FROM task_dependencies"
-        )
-        .fetch_all(pool)
-        .await?;
+    async fn populate_dependencies(
+        pool: &Pool<Sqlite>,
+        tasks: &mut [Task],
+    ) -> Result<(), sqlx::Error> {
+        if tasks.is_empty() {
+            return Ok(());
+        }
+        let deps: Vec<(String, String)> =
+            sqlx::query_as("SELECT task_id, depends_on_task_id FROM task_dependencies")
+                .fetch_all(pool)
+                .await?;
 
-        let mut by_task: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut by_task: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for (tid, did) in deps {
             by_task.entry(tid).or_default().push(did);
         }
@@ -242,7 +268,10 @@ impl TaskService {
 
     /// 列出任務：排隊中 / 執行中全部回傳，已結束的只回傳最近 FINISHED_LIST_LIMIT 筆
     /// 有搜尋字串時改為搜尋全部任務（標題、Prompt、ID、結果），回傳最近 FINISHED_LIST_LIMIT 筆
-    pub async fn list_tasks(pool: &Pool<Sqlite>, query: Option<&str>) -> Result<Vec<Task>, sqlx::Error> {
+    pub async fn list_tasks(
+        pool: &Pool<Sqlite>,
+        query: Option<&str>,
+    ) -> Result<Vec<Task>, sqlx::Error> {
         let query = query.map(str::trim).filter(|q| !q.is_empty());
         let sql = if query.is_some() {
             r#"
@@ -272,12 +301,10 @@ impl TaskService {
 
     /// 取得單一任務
     pub async fn get_task(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Task>, sqlx::Error> {
-        let task = sqlx::query_as::<_, Task>(
-            "SELECT * FROM tasks WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+        let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
         if let Some(t) = task {
             let mut list = vec![t];
             Self::populate_dependencies(pool, &mut list).await?;
@@ -294,7 +321,10 @@ impl TaskService {
     /// 3. task_dependencies 內的所有前置任務都必須為 'completed'
     ///
     /// 以單一 UPDATE ... RETURNING 完成挑選與標記，並發領取時不會重複發出同一任務
-    pub async fn claim_task(pool: &Pool<Sqlite>, agent_id: &str) -> Result<Option<ClaimedTask>, sqlx::Error> {
+    pub async fn claim_task(
+        pool: &Pool<Sqlite>,
+        agent_id: &str,
+    ) -> Result<Option<ClaimedTask>, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let lease_id = uuid::Uuid::new_v4().to_string();
 
@@ -416,7 +446,8 @@ impl TaskService {
         task_id: &str,
         worktree: Option<(&str, &str, &str)>,
     ) -> Result<(), sqlx::Error> {
-        let (path, branch, base) = worktree.map_or((None, None, None), |(p, b, c)| (Some(p), Some(b), Some(c)));
+        let (path, branch, base) =
+            worktree.map_or((None, None, None), |(p, b, c)| (Some(p), Some(b), Some(c)));
         sqlx::query("UPDATE tasks SET worktree_path = ?, branch = ?, base_commit = ? WHERE id = ?")
             .bind(path)
             .bind(branch)
@@ -428,13 +459,25 @@ impl TaskService {
     }
 
     /// 記錄 Agent 的工作階段 ID，追加指示或重試時用來接續
-    pub async fn set_session(pool: &Pool<Sqlite>, task_id: &str, session_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE tasks SET session_id = ? WHERE id = ?").bind(session_id).bind(task_id).execute(pool).await?;
+    pub async fn set_session(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        session_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE tasks SET session_id = ? WHERE id = ?")
+            .bind(session_id)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
     /// 記錄這次執行的結果；結果事件沒提供的數字保留逐步累加的值（每次領取時清空）
-    pub async fn set_result(pool: &Pool<Sqlite>, task_id: &str, r: &RunResult) -> Result<(), sqlx::Error> {
+    pub async fn set_result(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        r: &RunResult,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             UPDATE tasks SET result = ?, cost_usd = COALESCE(?, cost_usd), input_tokens = COALESCE(?, input_tokens),
@@ -454,7 +497,11 @@ impl TaskService {
     }
 
     /// 累加這次執行的用量（agy 的結果事件是整段對話的累計，只能逐步加總）
-    pub async fn add_usage(pool: &Pool<Sqlite>, task_id: &str, u: &Usage) -> Result<(), sqlx::Error> {
+    pub async fn add_usage(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        u: &Usage,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             UPDATE tasks SET input_tokens = COALESCE(input_tokens, 0) + ?, output_tokens = COALESCE(output_tokens, 0) + ?,
@@ -472,12 +519,18 @@ impl TaskService {
     }
 
     /// 是否仍持有執行中任務的租約
-    pub async fn holds_lease(pool: &Pool<Sqlite>, task_id: &str, lease_id: &str) -> Result<bool, sqlx::Error> {
-        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tasks WHERE id = ? AND status = 'running' AND lease_id = ?")
-            .bind(task_id)
-            .bind(lease_id)
-            .fetch_one(pool)
-            .await
+    pub async fn holds_lease(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        lease_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM tasks WHERE id = ? AND status = 'running' AND lease_id = ?",
+        )
+        .bind(task_id)
+        .bind(lease_id)
+        .fetch_one(pool)
+        .await
     }
 
     /// 取消：排隊中或執行中的任務直接標記失敗並作廢租約
@@ -499,8 +552,35 @@ impl TaskService {
         Ok(rows > 0)
     }
 
+    /// 徹底刪除任務及其相關依賴、日誌與產出記錄
+    pub async fn delete_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+
+        // 刪除關聯資料
+        sqlx::query("DELETE FROM task_logs WHERE task_id = ?").bind(task_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM artifacts WHERE task_id = ?").bind(task_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?")
+            .bind(task_id)
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let rows = sqlx::query("DELETE FROM tasks WHERE id = ?")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+
+        tx.commit().await?;
+        Ok(rows > 0)
+    }
+
     /// 任務心跳更新（必須持有目前的租約）
-    pub async fn heartbeat(pool: &Pool<Sqlite>, task_id: &str, lease_id: &str) -> Result<bool, sqlx::Error> {
+    pub async fn heartbeat(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        lease_id: &str,
+    ) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
             r#"
@@ -521,7 +601,11 @@ impl TaskService {
     }
 
     /// 完成任務（必須持有目前的租約）
-    pub async fn complete_task(pool: &Pool<Sqlite>, task_id: &str, lease_id: &str) -> Result<bool, sqlx::Error> {
+    pub async fn complete_task(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        lease_id: &str,
+    ) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
             "UPDATE tasks SET status = 'completed', lease_id = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_id = ?"
@@ -537,7 +621,11 @@ impl TaskService {
     }
 
     /// 失敗任務（必須持有目前的租約）；依賴它的排隊任務會一併標記失敗
-    pub async fn fail_task(pool: &Pool<Sqlite>, task_id: &str, lease_id: &str) -> Result<bool, sqlx::Error> {
+    pub async fn fail_task(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        lease_id: &str,
+    ) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
             "UPDATE tasks SET status = 'failed', lease_id = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_id = ?"
@@ -558,7 +646,11 @@ impl TaskService {
     /// 追加指示：以已結束的任務為基礎建立新任務，沿用同一個 Agent、執行設定與工作階段
     /// 原任務的 worktree 移交給新任務，Agent 才能在同一份修改上接著做
     /// 原任務不在已結束狀態或沒有指定 Agent 時回傳 None
-    pub async fn create_followup(pool: &Pool<Sqlite>, parent_id: &str, prompt: &str) -> Result<Option<Task>, sqlx::Error> {
+    pub async fn create_followup(
+        pool: &Pool<Sqlite>,
+        parent_id: &str,
+        prompt: &str,
+    ) -> Result<Option<Task>, sqlx::Error> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
@@ -592,7 +684,11 @@ impl TaskService {
     /// 重新排隊失敗的任務：attempts 歸零，並一併恢復因它連鎖失敗的下游任務
     /// （attempts = 0 代表從未被領取，只是被連帶標記失敗）
     /// fresh = true 時清除工作階段，Agent 從頭執行而不是接續上一段對話
-    pub async fn requeue_task(pool: &Pool<Sqlite>, task_id: &str, fresh: bool) -> Result<RequeueResult, sqlx::Error> {
+    pub async fn requeue_task(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        fresh: bool,
+    ) -> Result<RequeueResult, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let mut tx = pool.begin().await?;
 
@@ -652,7 +748,10 @@ impl TaskService {
 
     /// 逾時檢查與重置（Background Worker 呼叫）
     /// 未達 MAX_ATTEMPTS 的放回佇列重試，已達上限的標記 failed
-    pub async fn recover_timed_out_tasks(pool: &Pool<Sqlite>, timeout_seconds: i64) -> Result<RecoveryResult, sqlx::Error> {
+    pub async fn recover_timed_out_tasks(
+        pool: &Pool<Sqlite>,
+        timeout_seconds: i64,
+    ) -> Result<RecoveryResult, sqlx::Error> {
         let threshold_str = (Utc::now() - chrono::Duration::seconds(timeout_seconds)).to_rfc3339();
         let now = Utc::now().to_rfc3339();
 
@@ -678,7 +777,11 @@ impl TaskService {
 
         let mut result = RecoveryResult::default();
         for (status, _) in &expired {
-            if status == "failed" { result.failed += 1 } else { result.requeued += 1 }
+            if status == "failed" {
+                result.failed += 1
+            } else {
+                result.requeued += 1
+            }
         }
         if result.failed > 0 {
             result.failed += Self::cascade_dependency_failures(pool).await?;
@@ -743,7 +846,10 @@ impl TaskService {
         .execute(pool)
         .await?;
 
-        if LOG_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(LOG_TRIM_EVERY) {
+        if LOG_INSERTS
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(LOG_TRIM_EVERY)
+        {
             Self::trim_logs(pool, task_id).await?;
         }
         Ok(log)
@@ -785,7 +891,11 @@ mod tests {
 
     // :memory: 每條連線各自一個資料庫，所以只開一條
     async fn memory_pool() -> Pool<Sqlite> {
-        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
         pool
     }
@@ -805,27 +915,56 @@ mod tests {
     }
 
     async fn status(pool: &Pool<Sqlite>, id: &str) -> String {
-        TaskService::get_task(pool, id).await.unwrap().unwrap().status
+        TaskService::get_task(pool, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status
     }
 
     /// 讓所有 running 任務立即視為逾時
     async fn expire_all(pool: &Pool<Sqlite>) -> RecoveryResult {
-        TaskService::recover_timed_out_tasks(pool, -1).await.unwrap()
+        TaskService::recover_timed_out_tasks(pool, -1)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
     async fn only_lease_holder_can_heartbeat_and_complete() {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
-        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.task.id, task.id);
         assert_eq!(claimed.task.attempts, 1);
 
-        assert!(!TaskService::heartbeat(&pool, &task.id, "wrong").await.unwrap());
-        assert!(!TaskService::complete_task(&pool, &task.id, "wrong").await.unwrap());
-        assert!(!TaskService::fail_task(&pool, &task.id, "wrong").await.unwrap());
-        assert!(TaskService::heartbeat(&pool, &task.id, &claimed.lease_id).await.unwrap());
-        assert!(TaskService::complete_task(&pool, &task.id, &claimed.lease_id).await.unwrap());
+        assert!(
+            !TaskService::heartbeat(&pool, &task.id, "wrong")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !TaskService::complete_task(&pool, &task.id, "wrong")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !TaskService::fail_task(&pool, &task.id, "wrong")
+                .await
+                .unwrap()
+        );
+        assert!(
+            TaskService::heartbeat(&pool, &task.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            TaskService::complete_task(&pool, &task.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
         assert_eq!(status(&pool, &task.id).await, "completed");
     }
 
@@ -833,15 +972,33 @@ mod tests {
     async fn stale_runner_cannot_complete_reclaimed_task() {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
-        let first = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let first = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(expire_all(&pool).await.requeued, 1);
 
-        let second = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let second = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_ne!(first.lease_id, second.lease_id);
-        assert!(!TaskService::complete_task(&pool, &task.id, &first.lease_id).await.unwrap());
-        assert!(!TaskService::heartbeat(&pool, &task.id, &first.lease_id).await.unwrap());
+        assert!(
+            !TaskService::complete_task(&pool, &task.id, &first.lease_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !TaskService::heartbeat(&pool, &task.id, &first.lease_id)
+                .await
+                .unwrap()
+        );
         assert_eq!(status(&pool, &task.id).await, "running");
-        assert!(TaskService::complete_task(&pool, &task.id, &second.lease_id).await.unwrap());
+        assert!(
+            TaskService::complete_task(&pool, &task.id, &second.lease_id)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -849,7 +1006,10 @@ mod tests {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
         for attempt in 1..=MAX_ATTEMPTS {
-            let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            let claimed = TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(claimed.task.attempts, attempt);
             let result = expire_all(&pool).await;
             if attempt < MAX_ATTEMPTS {
@@ -860,7 +1020,12 @@ mod tests {
             }
         }
         assert_eq!(status(&pool, &task.id).await, "failed");
-        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+        assert!(
+            TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -871,9 +1036,16 @@ mod tests {
         let c = new_task(&pool, "c", Some(&b.id)).await;
         let other = new_task(&pool, "unrelated", None).await;
 
-        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.task.id, a.id);
-        assert!(TaskService::fail_task(&pool, &a.id, &claimed.lease_id).await.unwrap());
+        assert!(
+            TaskService::fail_task(&pool, &a.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
 
         assert_eq!(status(&pool, &b.id).await, "failed");
         assert_eq!(status(&pool, &c.id).await, "failed");
@@ -886,7 +1058,10 @@ mod tests {
         let a = new_task(&pool, "a", None).await;
         let b = new_task(&pool, "b", Some(&a.id)).await;
         for _ in 0..MAX_ATTEMPTS {
-            TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .unwrap();
             expire_all(&pool).await;
         }
         assert_eq!(status(&pool, &a.id).await, "failed");
@@ -899,36 +1074,68 @@ mod tests {
         let _older = new_task(&pool, "older", None).await;
         let newer = new_task(&pool, "newer", None).await;
 
-        let dispatched = TaskService::dispatch_task(&pool, &newer.id, &agy_opts()).await.unwrap().unwrap();
+        let dispatched = TaskService::dispatch_task(&pool, &newer.id, &agy_opts())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(dispatched.assigned_agent.as_deref(), Some("agy"));
         assert!(dispatched.priority > 0);
 
         // 指定給 agy 後，其他 Agent 領不到它，agy 則優先領到它
-        let other = TaskService::claim_task(&pool, "claude").await.unwrap().unwrap();
+        let other = TaskService::claim_task(&pool, "claude")
+            .await
+            .unwrap()
+            .unwrap();
         assert_ne!(other.task.id, newer.id);
-        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.task.id, newer.id);
 
         // 已在執行中的任務不能再派發
-        assert!(TaskService::dispatch_task(&pool, &newer.id, &RunOptions::default()).await.unwrap().is_none());
+        assert!(
+            TaskService::dispatch_task(&pool, &newer.id, &RunOptions::default())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn agy_opts() -> RunOptions {
-        RunOptions { agent_id: Some("agy".into()), ..Default::default() }
+        RunOptions {
+            agent_id: Some("agy".into()),
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
     async fn dispatch_options_keep_omitted_fields_and_clear_empty_ones() {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
-        let opts = RunOptions { model: Some("opus".into()), workdir: Some("/tmp".into()), auto_approve: Some(true), ..agy_opts() };
-        TaskService::dispatch_task(&pool, &task.id, &opts).await.unwrap().unwrap();
-
-        // 只改 model 為空字串：清除 model，其餘保留
-        let cleared = TaskService::dispatch_task(&pool, &task.id, &RunOptions { model: Some("".into()), ..Default::default() })
+        let opts = RunOptions {
+            model: Some("opus".into()),
+            workdir: Some("/tmp".into()),
+            auto_approve: Some(true),
+            ..agy_opts()
+        };
+        TaskService::dispatch_task(&pool, &task.id, &opts)
             .await
             .unwrap()
             .unwrap();
+
+        // 只改 model 為空字串：清除 model，其餘保留
+        let cleared = TaskService::dispatch_task(
+            &pool,
+            &task.id,
+            &RunOptions {
+                model: Some("".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(cleared.model, None);
         assert_eq!(cleared.workdir.as_deref(), Some("/tmp"));
         assert!(cleared.auto_approve);
@@ -939,17 +1146,44 @@ mod tests {
     async fn claim_returns_command_from_registry() {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
-        let opts = RunOptions { model: Some("haiku".into()), agent_id: Some("claude".into()), ..Default::default() };
-        TaskService::dispatch_task(&pool, &task.id, &opts).await.unwrap();
+        let opts = RunOptions {
+            model: Some("haiku".into()),
+            agent_id: Some("claude".into()),
+            ..Default::default()
+        };
+        TaskService::dispatch_task(&pool, &task.id, &opts)
+            .await
+            .unwrap();
 
-        let claimed = TaskService::claim_task(&pool, "claude").await.unwrap().unwrap();
+        let claimed = TaskService::claim_task(&pool, "claude")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             claimed.command.unwrap(),
-            ["claude", "--output-format", "stream-json", "--verbose", "--model", "haiku", "--permission-mode", "acceptEdits", "-p", "p"]
+            [
+                "claude",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--model",
+                "haiku",
+                "--permission-mode",
+                "acceptEdits",
+                "-p",
+                "p"
+            ]
         );
         // 不在 Registry 裡的 Agent 也能領取，但沒有 command
         new_task(&pool, "b", None).await;
-        assert!(TaskService::claim_task(&pool, "custom").await.unwrap().unwrap().command.is_none());
+        assert!(
+            TaskService::claim_task(&pool, "custom")
+                .await
+                .unwrap()
+                .unwrap()
+                .command
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -959,18 +1193,48 @@ mod tests {
         let b = new_task(&pool, "b", Some(&a.id)).await;
 
         // 前置任務未完成：不能直接執行
-        assert!(TaskService::claim_specific(&pool, &b.id, "agy", &agy_opts()).await.unwrap().is_none());
+        assert!(
+            TaskService::claim_specific(&pool, &b.id, "agy", &agy_opts())
+                .await
+                .unwrap()
+                .is_none()
+        );
 
-        let opts = RunOptions { model: Some("gemini-4-argon-high".into()), ..Default::default() };
-        let claimed = TaskService::claim_specific(&pool, &a.id, "agy", &opts).await.unwrap().unwrap();
+        let opts = RunOptions {
+            model: Some("gemini-4-argon-high".into()),
+            ..Default::default()
+        };
+        let claimed = TaskService::claim_specific(&pool, &a.id, "agy", &opts)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.task.model.as_deref(), Some("gemini-4-argon-high"));
         assert_eq!(claimed.task.assigned_agent.as_deref(), Some("agy"));
         // 已在執行中：Runner 與第二次 spawn 都拿不到
-        assert!(TaskService::claim_specific(&pool, &a.id, "agy", &opts).await.unwrap().is_none());
-        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+        assert!(
+            TaskService::claim_specific(&pool, &a.id, "agy", &opts)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
-        assert!(TaskService::complete_task(&pool, &a.id, &claimed.lease_id).await.unwrap());
-        assert!(TaskService::claim_specific(&pool, &b.id, "claude", &RunOptions::default()).await.unwrap().is_some());
+        assert!(
+            TaskService::complete_task(&pool, &a.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            TaskService::claim_specific(&pool, &b.id, "claude", &RunOptions::default())
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -978,11 +1242,22 @@ mod tests {
         let pool = memory_pool().await;
         let a = new_task(&pool, "a", None).await;
         let b = new_task(&pool, "b", Some(&a.id)).await;
-        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(TaskService::cancel_task(&pool, &a.id).await.unwrap());
-        assert!(!TaskService::heartbeat(&pool, &a.id, &claimed.lease_id).await.unwrap());
-        assert!(!TaskService::complete_task(&pool, &a.id, &claimed.lease_id).await.unwrap());
+        assert!(
+            !TaskService::heartbeat(&pool, &a.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !TaskService::complete_task(&pool, &a.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
         assert_eq!(status(&pool, &a.id).await, "failed");
         assert_eq!(status(&pool, &b.id).await, "failed");
         // 已結束的任務不能再取消
@@ -996,21 +1271,45 @@ mod tests {
         let b = new_task(&pool, "b", Some(&a.id)).await;
         let c = new_task(&pool, "c", Some(&b.id)).await;
         for _ in 0..MAX_ATTEMPTS {
-            TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .unwrap();
             expire_all(&pool).await;
         }
         assert_eq!(status(&pool, &c.id).await, "failed");
 
         // 下游任務的前置任務仍是 failed，不能單獨重排
-        assert_eq!(TaskService::requeue_task(&pool, &b.id, false).await.unwrap(), RequeueResult::DependencyFailed);
-        assert_eq!(TaskService::requeue_task(&pool, &a.id, false).await.unwrap(), RequeueResult::Requeued { downstream: 2 });
+        assert_eq!(
+            TaskService::requeue_task(&pool, &b.id, false)
+                .await
+                .unwrap(),
+            RequeueResult::DependencyFailed
+        );
+        assert_eq!(
+            TaskService::requeue_task(&pool, &a.id, false)
+                .await
+                .unwrap(),
+            RequeueResult::Requeued { downstream: 2 }
+        );
         for id in [&a.id, &b.id, &c.id] {
             assert_eq!(status(&pool, id).await, "queued");
         }
         // attempts 歸零，可以再被領取 MAX_ATTEMPTS 次
-        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
-        assert_eq!((claimed.task.id.as_str(), claimed.task.attempts), (a.id.as_str(), 1));
-        assert_eq!(TaskService::requeue_task(&pool, &a.id, false).await.unwrap(), RequeueResult::NotFailed);
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (claimed.task.id.as_str(), claimed.task.attempts),
+            (a.id.as_str(), 1)
+        );
+        assert_eq!(
+            TaskService::requeue_task(&pool, &a.id, false)
+                .await
+                .unwrap(),
+            RequeueResult::NotFailed
+        );
     }
 
     #[tokio::test]
@@ -1019,11 +1318,26 @@ mod tests {
         let a = new_task(&pool, "a", None).await;
         let b = new_task(&pool, "b", Some(&a.id)).await;
         // a 完成、b 自己執行失敗：重排 b 只恢復 b 本身
-        let ca = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
-        TaskService::complete_task(&pool, &a.id, &ca.lease_id).await.unwrap();
-        let cb = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
-        TaskService::fail_task(&pool, &b.id, &cb.lease_id).await.unwrap();
-        assert_eq!(TaskService::requeue_task(&pool, &b.id, false).await.unwrap(), RequeueResult::Requeued { downstream: 0 });
+        let ca = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
+        TaskService::complete_task(&pool, &a.id, &ca.lease_id)
+            .await
+            .unwrap();
+        let cb = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
+        TaskService::fail_task(&pool, &b.id, &cb.lease_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            TaskService::requeue_task(&pool, &b.id, false)
+                .await
+                .unwrap(),
+            RequeueResult::Requeued { downstream: 0 }
+        );
         assert_eq!(status(&pool, &b.id).await, "queued");
     }
 
@@ -1039,14 +1353,28 @@ mod tests {
             ..Default::default()
         };
         let b = TaskService::create_task(&pool, dto).await.unwrap();
-        let ca = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
-        let r = RunResult { text: "改 foo.rs".into(), ..Default::default() };
+        let ca = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
+        let r = RunResult {
+            text: "改 foo.rs".into(),
+            ..Default::default()
+        };
         TaskService::set_result(&pool, &a.id, &r).await.unwrap();
-        TaskService::complete_task(&pool, &a.id, &ca.lease_id).await.unwrap();
+        TaskService::complete_task(&pool, &a.id, &ca.lease_id)
+            .await
+            .unwrap();
 
-        let cb = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let cb = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(cb.task.id, b.id);
-        assert_eq!(cb.command.unwrap().last().unwrap(), "根據分析：改 foo.rs\n開始實作");
+        assert_eq!(
+            cb.command.unwrap().last().unwrap(),
+            "根據分析：改 foo.rs\n開始實作"
+        );
         // 資料庫保留範本
         assert!(cb.task.prompt.contains(DEP_RESULT_PLACEHOLDER));
     }
@@ -1056,10 +1384,19 @@ mod tests {
         for (fresh, expected) in [(false, Some("sess-1")), (true, None)] {
             let pool = memory_pool().await;
             let t = new_task(&pool, "a", None).await;
-            let c = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
-            TaskService::set_session(&pool, &t.id, "sess-1").await.unwrap();
-            TaskService::fail_task(&pool, &t.id, &c.lease_id).await.unwrap();
-            TaskService::requeue_task(&pool, &t.id, fresh).await.unwrap();
+            let c = TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .unwrap();
+            TaskService::set_session(&pool, &t.id, "sess-1")
+                .await
+                .unwrap();
+            TaskService::fail_task(&pool, &t.id, &c.lease_id)
+                .await
+                .unwrap();
+            TaskService::requeue_task(&pool, &t.id, fresh)
+                .await
+                .unwrap();
             let t = TaskService::get_task(&pool, &t.id).await.unwrap().unwrap();
             assert_eq!(t.session_id.as_deref(), expected);
         }
@@ -1069,16 +1406,27 @@ mod tests {
     async fn trims_old_logs_and_truncates_long_messages() {
         let pool = memory_pool().await;
         let t = new_task(&pool, "a", None).await;
-        let log = |m: String| AddTaskLogDto { agent_id: "agy".into(), level: None, message: m };
+        let log = |m: String| AddTaskLogDto {
+            agent_id: "agy".into(),
+            level: None,
+            message: m,
+        };
         for i in 0..MAX_LOGS_PER_TASK + 5 {
-            TaskService::add_log(&pool, &t.id, log(format!("line {i}"))).await.unwrap();
+            TaskService::add_log(&pool, &t.id, log(format!("line {i}")))
+                .await
+                .unwrap();
         }
         TaskService::trim_logs(&pool, &t.id).await.unwrap();
         let logs = TaskService::get_logs(&pool, &t.id).await.unwrap();
         assert_eq!(logs.len() as i64, MAX_LOGS_PER_TASK);
-        assert_eq!(logs.last().unwrap().message, format!("line {}", MAX_LOGS_PER_TASK + 4));
+        assert_eq!(
+            logs.last().unwrap().message,
+            format!("line {}", MAX_LOGS_PER_TASK + 4)
+        );
 
-        let long = TaskService::add_log(&pool, &t.id, log("字".repeat(MAX_LOG_CHARS + 10))).await.unwrap();
+        let long = TaskService::add_log(&pool, &t.id, log("字".repeat(MAX_LOG_CHARS + 10)))
+            .await
+            .unwrap();
         assert_eq!(long.message.chars().count(), MAX_LOG_CHARS + 1); // 含結尾的「…」
     }
 
@@ -1098,16 +1446,33 @@ mod tests {
         // 最早結束的幾筆被排除
         assert!(!listed.iter().any(|t| t.title == "done0"));
         // 搜尋涵蓋全部任務，包含被排除的舊任務與結果文字
-        let found = TaskService::list_tasks(&pool, Some(" DONE0 ")).await.unwrap();
-        assert_eq!(found.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["done0"]);
-        let r = RunResult { text: "找到的答案".into(), ..Default::default() };
-        TaskService::set_result(&pool, &queued.id, &r).await.unwrap();
-        assert_eq!(TaskService::list_tasks(&pool, Some("答案")).await.unwrap().len(), 1);
+        let found = TaskService::list_tasks(&pool, Some(" DONE0 "))
+            .await
+            .unwrap();
+        assert_eq!(
+            found.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            ["done0"]
+        );
+        let r = RunResult {
+            text: "找到的答案".into(),
+            ..Default::default()
+        };
+        TaskService::set_result(&pool, &queued.id, &r)
+            .await
+            .unwrap();
+        assert_eq!(
+            TaskService::list_tasks(&pool, Some("答案"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn concurrent_claims_never_hand_out_same_task() {
-        let path = std::env::temp_dir().join(format!("agent_board_test_{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("agent_board_test_{}.db", uuid::Uuid::new_v4()));
         let pool = crate::db::init_db(path.to_str().unwrap()).await.unwrap();
         for i in 0..3 {
             new_task(&pool, &format!("t{i}"), None).await;
@@ -1116,7 +1481,11 @@ mod tests {
         let handles: Vec<_> = (0..10)
             .map(|i| {
                 let pool = pool.clone();
-                tokio::spawn(async move { TaskService::claim_task(&pool, &format!("agent{i}")).await.unwrap() })
+                tokio::spawn(async move {
+                    TaskService::claim_task(&pool, &format!("agent{i}"))
+                        .await
+                        .unwrap()
+                })
             })
             .collect();
         let mut ids = Vec::new();
@@ -1137,15 +1506,38 @@ mod tests {
     async fn followup_inherits_settings_session_and_worktree() {
         let pool = memory_pool().await;
         let parent = new_task(&pool, "寫功能", None).await;
-        let opts = RunOptions { agent_id: Some("claude".into()), model: Some("haiku".into()), workdir: Some("/repo".into()), isolate: Some(true), ..Default::default() };
-        let claimed = TaskService::claim_specific(&pool, &parent.id, "claude", &opts).await.unwrap().unwrap();
+        let opts = RunOptions {
+            agent_id: Some("claude".into()),
+            model: Some("haiku".into()),
+            workdir: Some("/repo".into()),
+            isolate: Some(true),
+            ..Default::default()
+        };
+        let claimed = TaskService::claim_specific(&pool, &parent.id, "claude", &opts)
+            .await
+            .unwrap()
+            .unwrap();
         // 執行中不能追加
-        assert!(TaskService::create_followup(&pool, &parent.id, "再補測試").await.unwrap().is_none());
-        TaskService::set_session(&pool, &parent.id, "sess-1").await.unwrap();
-        TaskService::set_worktree(&pool, &parent.id, Some(("/wt/x", "agent-board/x", "abc"))).await.unwrap();
-        TaskService::complete_task(&pool, &parent.id, &claimed.lease_id).await.unwrap();
+        assert!(
+            TaskService::create_followup(&pool, &parent.id, "再補測試")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        TaskService::set_session(&pool, &parent.id, "sess-1")
+            .await
+            .unwrap();
+        TaskService::set_worktree(&pool, &parent.id, Some(("/wt/x", "agent-board/x", "abc")))
+            .await
+            .unwrap();
+        TaskService::complete_task(&pool, &parent.id, &claimed.lease_id)
+            .await
+            .unwrap();
 
-        let child = TaskService::create_followup(&pool, &parent.id, "再補測試").await.unwrap().unwrap();
+        let child = TaskService::create_followup(&pool, &parent.id, "再補測試")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(child.title, "↳ 寫功能");
         assert_eq!(child.status, "queued");
         assert_eq!(child.prompt, "再補測試");
@@ -1155,13 +1547,28 @@ mod tests {
         assert_eq!(child.session_id.as_deref(), Some("sess-1"));
         assert_eq!(child.branch.as_deref(), Some("agent-board/x"));
         assert!(child.isolate);
-        let parent = TaskService::get_task(&pool, &parent.id).await.unwrap().unwrap();
-        assert_eq!(parent.worktree_path, None, "worktree moves to the follow-up");
+        let parent = TaskService::get_task(&pool, &parent.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parent.worktree_path, None,
+            "worktree moves to the follow-up"
+        );
 
         // 追加的追加不會疊加箭頭
-        let claimed = TaskService::claim_specific(&pool, &child.id, "claude", &RunOptions::default()).await.unwrap().unwrap();
-        TaskService::fail_task(&pool, &child.id, &claimed.lease_id).await.unwrap();
-        let grandchild = TaskService::create_followup(&pool, &child.id, "修好它").await.unwrap().unwrap();
+        let claimed =
+            TaskService::claim_specific(&pool, &child.id, "claude", &RunOptions::default())
+                .await
+                .unwrap()
+                .unwrap();
+        TaskService::fail_task(&pool, &child.id, &claimed.lease_id)
+            .await
+            .unwrap();
+        let grandchild = TaskService::create_followup(&pool, &child.id, "修好它")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(grandchild.title, "↳ 寫功能");
     }
 
@@ -1169,24 +1576,79 @@ mod tests {
     async fn stores_run_result() {
         let pool = memory_pool().await;
         let task = new_task(&pool, "a", None).await;
-        let r = RunResult { text: "done".into(), cost_usd: Some(0.5), input_tokens: Some(10), output_tokens: Some(3), duration_ms: Some(1200), is_error: false };
+        let r = RunResult {
+            text: "done".into(),
+            cost_usd: Some(0.5),
+            input_tokens: Some(10),
+            output_tokens: Some(3),
+            duration_ms: Some(1200),
+            is_error: false,
+        };
         TaskService::set_result(&pool, &task.id, &r).await.unwrap();
-        let t = TaskService::get_task(&pool, &task.id).await.unwrap().unwrap();
-        assert_eq!((t.result.as_deref(), t.cost_usd, t.input_tokens, t.output_tokens, t.duration_ms), (Some("done"), Some(0.5), Some(10), Some(3), Some(1200)));
+        let t = TaskService::get_task(&pool, &task.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                t.result.as_deref(),
+                t.cost_usd,
+                t.input_tokens,
+                t.output_tokens,
+                t.duration_ms
+            ),
+            (Some("done"), Some(0.5), Some(10), Some(3), Some(1200))
+        );
 
         // agy：逐步累加，結果事件只帶文字
         let other = new_task(&pool, "b", None).await;
         for _ in 0..2 {
-            TaskService::add_usage(&pool, &other.id, &Usage { input_tokens: 100, output_tokens: 5, duration_ms: 700 }).await.unwrap();
+            TaskService::add_usage(
+                &pool,
+                &other.id,
+                &Usage {
+                    input_tokens: 100,
+                    output_tokens: 5,
+                    duration_ms: 700,
+                },
+            )
+            .await
+            .unwrap();
         }
-        let text_only = RunResult { text: "ok".into(), ..Default::default() };
-        TaskService::set_result(&pool, &other.id, &text_only).await.unwrap();
-        let t = TaskService::get_task(&pool, &other.id).await.unwrap().unwrap();
-        assert_eq!((t.result.as_deref(), t.input_tokens, t.output_tokens, t.duration_ms), (Some("ok"), Some(200), Some(10), Some(1400)));
+        let text_only = RunResult {
+            text: "ok".into(),
+            ..Default::default()
+        };
+        TaskService::set_result(&pool, &other.id, &text_only)
+            .await
+            .unwrap();
+        let t = TaskService::get_task(&pool, &other.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                t.result.as_deref(),
+                t.input_tokens,
+                t.output_tokens,
+                t.duration_ms
+            ),
+            (Some("ok"), Some(200), Some(10), Some(1400))
+        );
 
         // 重新領取時清空上一次的結果
-        let claimed = TaskService::claim_specific(&pool, &task.id, "agy", &RunOptions::default()).await.unwrap().unwrap();
-        assert_eq!((claimed.task.result, claimed.task.cost_usd, claimed.task.input_tokens), (None, None, None));
+        let claimed = TaskService::claim_specific(&pool, &task.id, "agy", &RunOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                claimed.task.result,
+                claimed.task.cost_usd,
+                claimed.task.input_tokens
+            ),
+            (None, None, None)
+        );
     }
 
     #[tokio::test]
@@ -1203,7 +1665,10 @@ mod tests {
         )
         .await;
         assert!(res.is_err());
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks").fetch_one(&pool).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(n, 0);
     }
 }

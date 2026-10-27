@@ -9,10 +9,17 @@ async fn main() {
     let db_path = args.next().unwrap_or_else(|| "agent_board.db".into());
     let token_path = args.next().unwrap_or_else(|| "api_token".into());
 
-    let token = load_or_create_token(std::path::Path::new(&token_path)).expect("Failed to load token");
+    let token =
+        load_or_create_token(std::path::Path::new(&token_path)).expect("Failed to load token");
     println!("[*] API token file: {}", token_path);
 
-    let port = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(18833);
-    let lease_timeout = std::env::var("LEASE_TIMEOUT_SECS").ok().and_then(|p| p.parse().ok()).unwrap_or(60);
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(18833);
+    let lease_timeout = std::env::var("LEASE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(60);
     serve(&db_path, token, port, lease_timeout).await;
 }

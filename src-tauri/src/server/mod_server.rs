@@ -1,28 +1,30 @@
 use crate::features::agents::{self, AGENTS};
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
 use crate::features::execution::{SpawnError, Spawner};
-use crate::features::runners::Runners;
-use crate::features::worktree;
 use crate::features::messages::{MessageService, SendMessageDto};
+use crate::features::runners::Runners;
 use crate::features::stats::{StatsQuery, StatsService};
-use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService};
+use crate::features::tasks::{
+    AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService,
+};
 use crate::features::templates::{CreateTemplateDto, TemplateService, UpdateTemplateDto};
+use crate::features::worktree;
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
     response::IntoResponse,
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::net::SocketAddr;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BoardEvent {
@@ -51,7 +53,7 @@ pub fn create_router(state: ServerState) -> Router {
     Router::new()
         // Tasks
         .route("/api/tasks", post(create_task).get(list_tasks))
-        .route("/api/tasks/{id}", get(get_task))
+        .route("/api/tasks/{id}", get(get_task).delete(delete_task))
         .route("/api/tasks/claim", post(claim_task))
         .route("/api/tasks/{id}/dispatch", post(dispatch_task))
         .route("/api/tasks/{id}/spawn", post(spawn_task))
@@ -67,21 +69,35 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
         .route("/api/tasks/{id}/fail", post(fail_task))
-        .route("/api/tasks/{id}/logs", post(add_task_log).get(get_task_logs))
+        .route(
+            "/api/tasks/{id}/logs",
+            post(add_task_log).get(get_task_logs),
+        )
         .route("/api/tasks/{id}/output", post(task_output))
         // Artifacts
-        .route("/api/tasks/{id}/artifacts", post(create_artifact).get(list_artifacts))
+        .route(
+            "/api/tasks/{id}/artifacts",
+            post(create_artifact).get(list_artifacts),
+        )
         // Messages
         .route("/api/messages", post(send_message).get(get_messages))
         // Stats
         .route("/api/stats", get(get_stats))
         // Templates
         .route("/api/templates", post(create_template).get(list_templates))
-        .route("/api/templates/{id}", get(get_template).put(update_template).delete(delete_template))
+        .route(
+            "/api/templates/{id}",
+            get(get_template)
+                .put(update_template)
+                .delete(delete_template),
+        )
         // SSE Events
         .route("/api/events", get(sse_events))
         // CORS 必須在驗證外層，瀏覽器的 preflight 才不會被擋
-        .route_layer(axum::middleware::from_fn_with_state(state.clone(), super::auth::require_token))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::auth::require_token,
+        ))
         .layer(super::auth::cors_layer())
         .with_state(state)
 }
@@ -132,6 +148,27 @@ async fn get_task(
     }
 }
 
+async fn delete_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // 若正在本機執行，先中止 process
+    state.spawner.kill(&id);
+    let deleted = TaskService::delete_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if deleted {
+        let _ = state.event_tx.send(BoardEvent {
+            event_type: "task_deleted".to_string(),
+            payload: serde_json::json!({ "id": id }),
+        });
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Task not found".to_string()))
+    }
+}
+
 async fn claim_task(
     State(state): State<ServerState>,
     Json(dto): Json<ClaimTaskDto>,
@@ -139,20 +176,29 @@ async fn claim_task(
     let mut task = TaskService::claim_task(&state.pool, &dto.agent_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    touch_runner(&state, &dto.agent_id, task.as_ref().map(|t| t.task.id.clone()));
+    touch_runner(
+        &state,
+        &dto.agent_id,
+        task.as_ref().map(|t| t.task.id.clone()),
+    );
 
     // 隔離執行：由伺服器建立 worktree，Runner 只需在回傳的 run_dir 執行
     if let Some(claimed) = task.as_mut()
-        && let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await {
-            let log = AddTaskLogDto { agent_id: dto.agent_id.clone(), level: Some("ERROR".into()), message: e };
-            let _ = TaskService::add_log(&state.pool, &claimed.task.id, log).await;
-            let _ = TaskService::fail_task(&state.pool, &claimed.task.id, &claimed.lease_id).await;
-            let _ = state.event_tx.send(BoardEvent {
-                event_type: "task_failed".to_string(),
-                payload: serde_json::json!({ "id": claimed.task.id }),
-            });
-            return Ok(Json(None));
-        }
+        && let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await
+    {
+        let log = AddTaskLogDto {
+            agent_id: dto.agent_id.clone(),
+            level: Some("ERROR".into()),
+            message: e,
+        };
+        let _ = TaskService::add_log(&state.pool, &claimed.task.id, log).await;
+        let _ = TaskService::fail_task(&state.pool, &claimed.task.id, &claimed.lease_id).await;
+        let _ = state.event_tx.send(BoardEvent {
+            event_type: "task_failed".to_string(),
+            payload: serde_json::json!({ "id": claimed.task.id }),
+        });
+        return Ok(Json(None));
+    }
 
     if let Some(ref t) = task {
         // 廣播不含租約 ID，只有領取者拿得到
@@ -173,7 +219,10 @@ async fn dispatch_task(
     let task = TaskService::dispatch_task(&state.pool, &id, &opts)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::CONFLICT, "Task not found or not queued".to_string()))?;
+        .ok_or((
+            StatusCode::CONFLICT,
+            "Task not found or not queued".to_string(),
+        ))?;
 
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_dispatched".to_string(),
@@ -190,7 +239,9 @@ async fn spawn_task(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     match state.spawner.spawn(&id, opts).await {
         Ok(task) => Ok(Json(task)),
-        Err(SpawnError::UnsupportedAgent) => Err((StatusCode::BAD_REQUEST, "Unsupported agent".to_string())),
+        Err(SpawnError::UnsupportedAgent) => {
+            Err((StatusCode::BAD_REQUEST, "Unsupported agent".to_string()))
+        }
         Err(SpawnError::NotClaimable) => Err((
             StatusCode::CONFLICT,
             "Task not queued or its dependency is not completed".to_string(),
@@ -212,7 +263,10 @@ async fn cancel_task(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if !cancelled {
-        return Err((StatusCode::CONFLICT, "Task not queued or running".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "Task not queued or running".to_string(),
+        ));
     }
 
     // 本機子程序立即 kill；Runner 執行的任務則在下次心跳被拒時自行中止
@@ -248,7 +302,10 @@ async fn requeue_task(
             });
             Ok(Json(serde_json::json!({ "downstream": downstream })))
         }
-        RequeueResult::NotFailed => Err((StatusCode::CONFLICT, "Task not found or not failed".to_string())),
+        RequeueResult::NotFailed => Err((
+            StatusCode::CONFLICT,
+            "Task not found or not failed".to_string(),
+        )),
         RequeueResult::DependencyFailed => Err((
             StatusCode::CONFLICT,
             "Its dependency has failed; requeue the dependency first".to_string(),
@@ -273,7 +330,10 @@ async fn followup_task(
     let task = TaskService::create_followup(&state.pool, &id, &dto.prompt)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or((StatusCode::CONFLICT, "Task not found, not finished, or has no assigned agent".to_string()))?;
+        .ok_or((
+            StatusCode::CONFLICT,
+            "Task not found, not finished, or has no assigned agent".to_string(),
+        ))?;
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_created".to_string(),
         payload: serde_json::to_value(&task).unwrap_or_default(),
@@ -282,7 +342,10 @@ async fn followup_task(
 }
 
 /// 取得 worktree 操作的目標任務；執行中的任務不能合併或捨棄
-async fn finished_task(state: &ServerState, id: &str) -> Result<crate::features::tasks::Task, (StatusCode, String)> {
+async fn finished_task(
+    state: &ServerState,
+    id: &str,
+) -> Result<crate::features::tasks::Task, (StatusCode, String)> {
     let task = TaskService::get_task(&state.pool, id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -301,7 +364,10 @@ async fn worktree_status(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
-    worktree::status(&task).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+    worktree::status(&task)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::CONFLICT, e))
 }
 
 #[derive(Deserialize)]
@@ -329,7 +395,9 @@ async fn worktree_merge(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let task = finished_task(&state, &id).await?;
-    let message = worktree::merge(&state.pool, &task).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+    let message = worktree::merge(&state.pool, &task)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
     let _ = state.event_tx.send(BoardEvent {
         event_type: "worktree_changed".to_string(),
         payload: serde_json::json!({ "id": id }),
@@ -342,7 +410,9 @@ async fn worktree_discard(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let task = finished_task(&state, &id).await?;
-    worktree::discard(&state.pool, &task).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+    worktree::discard(&state.pool, &task)
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
     let _ = state.event_tx.send(BoardEvent {
         event_type: "worktree_changed".to_string(),
         payload: serde_json::json!({ "id": id }),
@@ -361,16 +431,20 @@ async fn list_runners(State(state): State<ServerState>) -> impl IntoResponse {
 /// 記錄 Runner 出現；狀態有變才廣播，閒置輪詢不會洗版
 fn touch_runner(state: &ServerState, agent_id: &str, current_task: Option<String>) {
     if state.runners.touch(agent_id, current_task) {
-        let _ = state.event_tx.send(BoardEvent { event_type: "runners_changed".to_string(), payload: serde_json::json!({ "agent_id": agent_id }) });
+        let _ = state.event_tx.send(BoardEvent {
+            event_type: "runners_changed".to_string(),
+            payload: serde_json::json!({ "agent_id": agent_id }),
+        });
     }
 }
 
 /// 心跳 / 完成 / 失敗只帶任務 ID，從任務找出是哪個 Agent 的 Runner
 async fn touch_runner_for_task(state: &ServerState, task_id: &str, running: bool) {
     if let Ok(Some(task)) = TaskService::get_task(&state.pool, task_id).await
-        && let Some(agent) = task.assigned_agent {
-            touch_runner(state, &agent, running.then(|| task_id.to_string()));
-        }
+        && let Some(agent) = task.assigned_agent
+    {
+        touch_runner(state, &agent, running.then(|| task_id.to_string()));
+    }
 }
 
 const LEASE_MISMATCH: &str = "Task not running or lease mismatch";
@@ -534,13 +608,10 @@ async fn get_messages(
     State(state): State<ServerState>,
     Query(query): Query<GetMessagesQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let messages = MessageService::get_messages(
-        &state.pool,
-        &query.receiver,
-        query.unread.unwrap_or(false),
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let messages =
+        MessageService::get_messages(&state.pool, &query.receiver, query.unread.unwrap_or(false))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(messages))
 }
 
@@ -642,13 +713,15 @@ pub async fn start_background_workers(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(check_every));
         loop {
             interval.tick().await;
-            if let Ok(recovered) = TaskService::recover_timed_out_tasks(&pool, lease_timeout_secs).await
-                && recovered.requeued + recovered.failed > 0 {
-                    let _ = event_tx.send(BoardEvent {
-                        event_type: "task_recovered".to_string(),
-                        payload: serde_json::to_value(&recovered).unwrap_or_default(),
-                    });
-                }
+            if let Ok(recovered) =
+                TaskService::recover_timed_out_tasks(&pool, lease_timeout_secs).await
+                && recovered.requeued + recovered.failed > 0
+            {
+                let _ = event_tx.send(BoardEvent {
+                    event_type: "task_recovered".to_string(),
+                    payload: serde_json::to_value(&recovered).unwrap_or_default(),
+                });
+            }
         }
     });
 }

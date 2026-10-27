@@ -22,7 +22,10 @@ pub struct SendMessageDto {
 pub struct MessageService;
 
 impl MessageService {
-    pub async fn send_message(pool: &Pool<Sqlite>, dto: SendMessageDto) -> Result<AgentMessage, sqlx::Error> {
+    pub async fn send_message(
+        pool: &Pool<Sqlite>,
+        dto: SendMessageDto,
+    ) -> Result<AgentMessage, sqlx::Error> {
         let msg = AgentMessage {
             id: uuid::Uuid::new_v4().to_string(),
             sender: dto.sender,

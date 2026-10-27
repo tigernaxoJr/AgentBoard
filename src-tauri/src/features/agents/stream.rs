@@ -43,13 +43,18 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
 
     match (s(&v, "type").as_deref(), s(&v, "event").as_deref()) {
         // ── claude ──
-        (Some("system"), _) if s(&v, "subtype").as_deref() == Some("init") => {
-            s(&v, "session_id").map(Parsed::Session).into_iter().collect()
-        }
+        (Some("system"), _) if s(&v, "subtype").as_deref() == Some("init") => s(&v, "session_id")
+            .map(Parsed::Session)
+            .into_iter()
+            .collect(),
         (Some("assistant"), _) => content(&v)
             .filter_map(|c| match s(c, "type").as_deref() {
-                Some("text") => s(c, "text").filter(|t| !t.trim().is_empty()).map(|t| Parsed::Log("INFO", t)),
-                Some("tool_use") => Some(tool_log(&s(c, "name").unwrap_or_default(), c.get("input"))),
+                Some("text") => s(c, "text")
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| Parsed::Log("INFO", t)),
+                Some("tool_use") => {
+                    Some(tool_log(&s(c, "name").unwrap_or_default(), c.get("input")))
+                }
                 _ => None,
             })
             .collect(),
@@ -64,16 +69,25 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
                 text: s(&v, "result").unwrap_or_default(),
                 cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
                 input_tokens: Some(
-                    n(&usage, "input_tokens") + n(&usage, "cache_creation_input_tokens") + n(&usage, "cache_read_input_tokens"),
+                    n(&usage, "input_tokens")
+                        + n(&usage, "cache_creation_input_tokens")
+                        + n(&usage, "cache_read_input_tokens"),
                 ),
                 output_tokens: Some(n(&usage, "output_tokens")),
                 duration_ms: Some(n(&v, "duration_ms")),
                 is_error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
             };
-            s(&v, "session_id").map(Parsed::Session).into_iter().chain([Parsed::Result(result)]).collect()
+            s(&v, "session_id")
+                .map(Parsed::Session)
+                .into_iter()
+                .chain([Parsed::Result(result)])
+                .collect()
         }
         // ── agy ──
-        (_, Some("init")) => s(&v, "conversation_id").map(Parsed::Session).into_iter().collect(),
+        (_, Some("init")) => s(&v, "conversation_id")
+            .map(Parsed::Session)
+            .into_iter()
+            .collect(),
         (_, Some("step_update")) => {
             let step = v.get("step_update").cloned().unwrap_or_default();
             if s(&step, "state").as_deref() != Some("DONE") {
@@ -84,12 +98,19 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
             let mut out = vec![Parsed::Usage(Usage {
                 input_tokens: n(&usage, "input_tokens") + n(&usage, "cache_read_tokens"),
                 output_tokens: n(&usage, "output_tokens") + n(&usage, "thinking_tokens"),
-                duration_ms: (step.get("duration_seconds").and_then(Value::as_f64).unwrap_or(0.0) * 1000.0) as i64,
+                duration_ms: (step
+                    .get("duration_seconds")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    * 1000.0) as i64,
             })];
             // 回覆文字是逐字片段，最後在 result 事件一次取得；這裡只記錄完成的工具呼叫
             if s(&step, "step_type").as_deref() == Some("tool") {
                 let info = step.get("tool_info").cloned().unwrap_or_default();
-                out.push(tool_log(&s(&step, "tool_name").unwrap_or_default(), info.get("parameters")));
+                out.push(tool_log(
+                    &s(&step, "tool_name").unwrap_or_default(),
+                    info.get("parameters"),
+                ));
             }
             out.retain(|p| *p != Parsed::Usage(Usage::default()));
             out
@@ -102,7 +123,10 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
                 is_error: s(&r, "status").as_deref() != Some("SUCCESS"),
                 ..Default::default()
             };
-            let mut out: Vec<_> = s(&r, "conversation_id").map(Parsed::Session).into_iter().collect();
+            let mut out: Vec<_> = s(&r, "conversation_id")
+                .map(Parsed::Session)
+                .into_iter()
+                .collect();
             if !text.is_empty() {
                 out.push(Parsed::Log("INFO", text));
             }
@@ -116,13 +140,20 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
 }
 
 fn content(v: &Value) -> impl Iterator<Item = &Value> {
-    v.pointer("/message/content").and_then(Value::as_array).into_iter().flatten()
+    v.pointer("/message/content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
 }
 
 fn text_of(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(items)) => items.iter().filter_map(|i| i.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|i| i.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
         Some(other) => other.to_string(),
         None => String::new(),
     }
@@ -130,12 +161,38 @@ fn text_of(v: Option<&Value>) -> String {
 
 /// 工具呼叫顯示成一行：「▸ Bash  ls -la」，優先挑最有代表性的參數
 fn tool_log(name: &str, input: Option<&Value>) -> Parsed {
-    const KEYS: &[&str] = &["command", "CommandLine", "file_path", "AbsolutePath", "TargetFile", "path", "pattern", "url", "query", "description"];
+    const KEYS: &[&str] = &[
+        "command",
+        "CommandLine",
+        "file_path",
+        "AbsolutePath",
+        "TargetFile",
+        "path",
+        "pattern",
+        "url",
+        "query",
+        "description",
+    ];
     let detail = input
-        .and_then(|i| KEYS.iter().find_map(|k| i.get(*k).and_then(Value::as_str).map(str::to_string)))
-        .or_else(|| input.filter(|i| i.as_object().is_some_and(|o| !o.is_empty())).map(Value::to_string))
+        .and_then(|i| {
+            KEYS.iter()
+                .find_map(|k| i.get(*k).and_then(Value::as_str).map(str::to_string))
+        })
+        .or_else(|| {
+            input
+                .filter(|i| i.as_object().is_some_and(|o| !o.is_empty()))
+                .map(Value::to_string)
+        })
         .unwrap_or_default();
-    Parsed::Log("TOOL", format!("▸ {name}  {}", truncate(detail.lines().next().unwrap_or(""), 200)).trim_end().to_string())
+    Parsed::Log(
+        "TOOL",
+        format!(
+            "▸ {name}  {}",
+            truncate(detail.lines().next().unwrap_or(""), 200)
+        )
+        .trim_end()
+        .to_string(),
+    )
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -151,7 +208,10 @@ mod tests {
 
     #[test]
     fn plain_text_passes_through() {
-        assert_eq!(parse_line("Error: boom"), vec![Parsed::Log("INFO", "Error: boom".into())]);
+        assert_eq!(
+            parse_line("Error: boom"),
+            vec![Parsed::Log("INFO", "Error: boom".into())]
+        );
         assert!(parse_line("   ").is_empty());
     }
 
@@ -164,7 +224,10 @@ mod tests {
         let msg = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"好的"},{"type":"tool_use","name":"Bash","input":{"command":"ls -la\nrm x","description":"list"}}]}}"#;
         assert_eq!(
             parse_line(msg),
-            vec![Parsed::Log("INFO", "好的".into()), Parsed::Log("TOOL", "▸ Bash  ls -la".into())]
+            vec![
+                Parsed::Log("INFO", "好的".into()),
+                Parsed::Log("TOOL", "▸ Bash  ls -la".into())
+            ]
         );
 
         let err = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"},{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"denied"}]}]}}"#;
@@ -199,13 +262,24 @@ mod tests {
         assert_eq!(
             parse_line(tool),
             vec![
-                Parsed::Usage(Usage { duration_ms: 330, ..Default::default() }),
+                Parsed::Usage(Usage {
+                    duration_ms: 330,
+                    ..Default::default()
+                }),
                 Parsed::Log("TOOL", "▸ run_command  ls".into())
             ]
         );
         let reply = r#"{"event":"step_update","step_update":{"state":"DONE","step_type":"agent_response","duration_seconds":2.8,"usage":{"input_tokens":8969,"output_tokens":43,"thinking_tokens":1,"cache_read_tokens":0}}}"#;
-        assert_eq!(parse_line(reply), vec![Parsed::Usage(Usage { input_tokens: 8969, output_tokens: 44, duration_ms: 2800 })]);
-        let user = r#"{"event":"step_update","step_update":{"state":"DONE","step_type":"user_input"}}"#;
+        assert_eq!(
+            parse_line(reply),
+            vec![Parsed::Usage(Usage {
+                input_tokens: 8969,
+                output_tokens: 44,
+                duration_ms: 2800
+            })]
+        );
+        let user =
+            r#"{"event":"step_update","step_update":{"state":"DONE","step_type":"user_input"}}"#;
         assert!(parse_line(user).is_empty());
 
         let result = r#"{"event":"result","result":{"conversation_id":"c-1","status":"SUCCESS","response":"OK\n","duration_seconds":2.9494,"usage":{"input_tokens":8952,"output_tokens":1,"thinking_tokens":2,"cache_read_tokens":5}}}"#;
@@ -214,7 +288,10 @@ mod tests {
             vec![
                 Parsed::Session("c-1".into()),
                 Parsed::Log("INFO", "OK".into()),
-                Parsed::Result(RunResult { text: "OK".into(), ..Default::default() })
+                Parsed::Result(RunResult {
+                    text: "OK".into(),
+                    ..Default::default()
+                })
             ]
         );
     }

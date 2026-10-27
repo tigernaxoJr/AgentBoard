@@ -49,13 +49,18 @@
      * `task_logs` (`id`, `task_id`, `agent_id`, `level`, `message`, `created_at`)
      * `agent_messages` (`id`, `sender`, `receiver`, `payload`, `read_status`, `created_at`)
   5. 實作 REST API 端點：
-     * `POST /api/tasks`：建立新任務（Claude / 人類寫入，支援 `depends_on_task_id`）。
+     * `POST /api/tasks`：建立新任務（Claude / 人類寫入，支援多重前置依賴 `dependency_ids`、指定 `model`、`workdir`、`isolate`、`auto_approve`）。
+     * `GET /api/tasks/{id}`：取得單一任務詳情。
+     * `DELETE /api/tasks/{id}`：刪除任務及其依賴、產出、日誌。
      * `POST /api/tasks/claim`：**原子性領取 API**，避免並發搶單衝突（單一操作完成查詢就緒任務並標記 `running`）。
      * `GET /api/tasks`：查詢任務清單與狀態。
      * `POST /api/tasks/{id}/heartbeat`：Agent 定期回報心跳，維持租約（Lease）。
      * `POST /api/tasks/{id}/logs`：即時追加執行日誌（並透過 SSE 推播）。
      * `POST /api/tasks/{id}/complete`：Agent 回報完成並上傳成果路徑。
      * `POST /api/tasks/{id}/fail`：Agent 回報失敗或錯誤資訊。
+     * `GET /api/stats`：統計面板資料彙整 API（按 Agent、工作目錄、日期）。
+     * `/api/templates`：任務範本 CRUD API。
+     * `GET /api/tasks/{id}/worktree/diff`：隔離執行的完整 Git Diff API。
   6. 加入背景定時檢查：
      * 自動偵測 `last_heartbeat_at` 逾時的任務，將其恢復為 `queued` 或標記 `failed`。
   7. 加入 **SSE (`GET /api/events`)** 讓後端狀態變更與日誌即時推播。

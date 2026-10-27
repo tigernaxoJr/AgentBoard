@@ -29,6 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tauri-plugin-notification = "2"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -37,7 +38,7 @@ libc = "0.2"
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 16
-lto = "fat"
+lto = "thin"
 opt-level = "z"
 panic = "abort"
 strip = true

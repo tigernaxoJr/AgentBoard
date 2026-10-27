@@ -10,6 +10,7 @@ import StatsModal from "./components/StatsModal.vue";
 import TemplateModal from "./components/TemplateModal.vue";
 import Icon from "./components/Icon.vue";
 import DependencyGraph from "./components/DependencyGraph.vue";
+import { cycleTheme, themePref } from "./composables/useTheme";
 import { notifyEnabled } from "./composables/useNotifications";
 import { STATUS_META, agentMeta, relativeTime } from "./ui";
 import type { CreateTaskPayload, RunOptions, Task, TaskStatus, TaskTemplate } from "./types";
@@ -36,6 +37,7 @@ const {
   dispatchTask,
   cancelTask,
   requeueTask,
+  deleteTask,
   followupTask,
   activeTaskArtifacts,
   fetchWorktree,
@@ -164,6 +166,56 @@ const handleCancel = async () => {
   } catch (err: any) {
     alert("取消失敗: " + err.message);
   }
+};
+
+const handleDeleteTask = async () => {
+  const task = selectedTask.value;
+  if (!task || !confirm(`確定徹底刪除任務「${task.title}」？相關的日誌與紀錄將一併清除且無法復原。`)) return;
+  try {
+    await deleteTask(task.id);
+  } catch (err: any) {
+    alert("刪除任務失敗: " + err.message);
+  }
+};
+
+const presetTemplateForModal = ref<Partial<TaskTemplate> | null>(null);
+
+const handleSaveTaskAsTemplate = () => {
+  const task = selectedTask.value;
+  if (!task) return;
+  presetTemplateForModal.value = {
+    name: `${task.title} 範本`,
+    description: `由任務 #${task.id.slice(0, 8)} 建立`,
+    title: task.title,
+    prompt: task.prompt,
+    assigned_agent: task.assigned_agent ?? undefined,
+    model: task.model ?? undefined,
+    workdir: task.workdir ?? undefined,
+    isolate: task.isolate,
+    auto_approve: task.auto_approve,
+  };
+  showTemplateModal.value = true;
+};
+
+const handleDuplicateTask = () => {
+  const task = selectedTask.value;
+  if (!task) return;
+  selectedTemplateForCreate.value = {
+    id: "",
+    name: "",
+    description: null,
+    title: `${task.title} (複製)`,
+    prompt: task.prompt,
+    assigned_agent: task.assigned_agent,
+    model: task.model,
+    workdir: task.workdir,
+    isolate: task.isolate,
+    auto_approve: task.auto_approve,
+    priority: 0,
+    created_at: "",
+    updated_at: "",
+  };
+  showCreateModal.value = true;
 };
 
 // 鍵盤快捷鍵：N 新增、/ 搜尋、Esc 關閉
@@ -332,6 +384,13 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
 
         <button
+          @click="cycleTheme"
+          :title="'主題：' + ({ system: '跟隨系統', light: '亮色', dark: '暗色' })[themePref] + '(點擊切換)'"
+          class="h-8 w-8 shrink-0 flex items-center justify-center rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink"
+        >
+          {{ { system: "🖥️", light: "☀️", dark: "🌙" }[themePref] }}
+        </button>
+        <button
           @click="showApiGuide = true"
           title="Agent 派工與 API 接入指南"
           class="h-8 px-2.5 shrink-0 whitespace-nowrap flex items-center gap-1.5 rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink text-xs font-medium transition-colors"
@@ -416,6 +475,9 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           @merge-worktree="handleMergeWorktree"
           @discard-worktree="handleDiscardWorktree"
           @cancel="handleCancel"
+          @delete="handleDeleteTask"
+          @duplicate="handleDuplicateTask"
+          @save-template="handleSaveTaskAsTemplate"
           @requeue="handleRequeue"
           @followup="handleFollowup"
           @select="selectTask"
@@ -427,6 +489,8 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <CreateTaskModal
       v-if="showCreateModal"
       :initial-template="selectedTemplateForCreate"
+      :tasks="tasks"
+      :agents="agents"
       @create="handleCreateTask"
       @open-templates="showTemplateModal = true"
       @close="showCreateModal = false; selectedTemplateForCreate = null"
@@ -436,6 +500,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <TemplateModal
       v-if="showTemplateModal"
       :templates="templates"
+      :preset-template="presetTemplateForModal"
       :fetch-templates="fetchTemplates"
       :create-template="createTemplate"
       :delete-template="deleteTemplate"
@@ -444,7 +509,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         showTemplateModal = false;
         showCreateModal = true;
       }"
-      @close="showTemplateModal = false"
+      @close="showTemplateModal = false; presetTemplateForModal = null"
     />
 
     <!-- Stats Modal -->

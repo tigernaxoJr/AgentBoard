@@ -26,7 +26,10 @@ pub struct Runners {
 
 impl Runners {
     pub fn new(offline_after_secs: i64) -> Self {
-        Self { seen: Arc::default(), offline_after: chrono::Duration::seconds(offline_after_secs) }
+        Self {
+            seen: Arc::default(),
+            offline_after: chrono::Duration::seconds(offline_after_secs),
+        }
     }
 
     /// 記錄 Runner 出現；回傳狀態是否有變化（新上線、換任務），供呼叫端決定要不要廣播
@@ -84,6 +87,9 @@ mod tests {
         runners.touch("claude", Some("t1".into()));
         std::thread::sleep(std::time::Duration::from_millis(5));
         assert!(!runners.list()[0].online);
-        assert!(runners.touch("claude", Some("t1".into())), "coming back online is a change");
+        assert!(
+            runners.touch("claude", Some("t1".into())),
+            "coming back online is a change"
+        );
     }
 }

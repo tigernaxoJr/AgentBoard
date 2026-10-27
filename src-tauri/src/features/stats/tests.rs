@@ -27,7 +27,9 @@ async fn test_stats_and_templates_lifecycle() {
     .await
     .unwrap();
 
-    let stats = StatsService::get_stats(&pool, StatsQuery::default()).await.unwrap();
+    let stats = StatsService::get_stats(&pool, StatsQuery::default())
+        .await
+        .unwrap();
     assert_eq!(stats.summary.total_tasks, 1);
     assert_eq!(stats.summary.queued_tasks, 1);
     assert_eq!(stats.by_agent.len(), 1);
@@ -95,16 +97,35 @@ async fn empty_db_stats_do_not_error_and_to_date_is_inclusive() {
     std::fs::create_dir_all(&dir).unwrap();
     let pool = init_db(dir.join("t.db").to_str().unwrap()).await.unwrap();
 
-    let empty = StatsService::get_stats(&pool, StatsQuery::default()).await.unwrap();
+    let empty = StatsService::get_stats(&pool, StatsQuery::default())
+        .await
+        .unwrap();
     assert_eq!(empty.summary.total_tasks, 0);
     assert_eq!(empty.summary.completed_tasks, 0);
 
-    TaskService::create_task(&pool, CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() })
-        .await
-        .unwrap();
+    TaskService::create_task(
+        &pool,
+        CreateTaskDto {
+            title: "t".into(),
+            prompt: "p".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let q = StatsQuery { from: Some(today.clone()), to: Some(today) };
-    assert_eq!(StatsService::get_stats(&pool, q).await.unwrap().summary.total_tasks, 1);
+    let q = StatsQuery {
+        from: Some(today.clone()),
+        to: Some(today),
+    };
+    assert_eq!(
+        StatsService::get_stats(&pool, q)
+            .await
+            .unwrap()
+            .summary
+            .total_tasks,
+        1
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -77,7 +77,10 @@ impl TemplateService {
         .await
     }
 
-    pub async fn create(pool: &Pool<Sqlite>, dto: CreateTemplateDto) -> Result<TaskTemplate, sqlx::Error> {
+    pub async fn create(
+        pool: &Pool<Sqlite>,
+        dto: CreateTemplateDto,
+    ) -> Result<TaskTemplate, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
         let auto_approve = dto.auto_approve.unwrap_or(true);
@@ -193,7 +196,11 @@ mod tests {
 
     #[tokio::test]
     async fn update_can_clear_optional_fields() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         crate::db::migrate(&pool).await.unwrap();
         let t = TemplateService::create(
             &pool,

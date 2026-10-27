@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { TaskTemplate } from "../types";
 import { agentMeta } from "../ui";
 import Icon from "./Icon.vue";
@@ -9,6 +10,7 @@ const props = defineProps<{
   fetchTemplates: () => Promise<void>;
   createTemplate: (tmpl: Partial<TaskTemplate>) => Promise<TaskTemplate>;
   deleteTemplate: (id: string) => Promise<void>;
+  presetTemplate?: Partial<TaskTemplate> | null;
 }>();
 
 const emit = defineEmits<{
@@ -32,7 +34,26 @@ const newTmpl = ref<Partial<TaskTemplate>>({
 
 onMounted(() => {
   props.fetchTemplates();
+  if (props.presetTemplate) {
+    newTmpl.value = { ...newTmpl.value, ...props.presetTemplate };
+    isCreating.value = true;
+  }
 });
+
+const chooseWorkdir = async () => {
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "選擇範本預設工作目錄",
+    });
+    if (selected && typeof selected === "string") {
+      newTmpl.value.workdir = selected;
+    }
+  } catch (err) {
+    console.warn("無法開啟資料夾選擇彈窗:", err);
+  }
+};
 
 const handleSave = async () => {
   if (!newTmpl.value.name?.trim() || !newTmpl.value.title?.trim() || !newTmpl.value.prompt?.trim()) return;
@@ -143,8 +164,19 @@ const field = "w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs
                 <input v-model="newTmpl.model" placeholder="預設" :class="field" />
               </div>
               <div>
-                <label class="mb-1 block font-semibold text-ink-3">工作目錄 (選填)</label>
-                <input v-model="newTmpl.workdir" placeholder="/path/to/project" :class="field" />
+                <div class="mb-1 flex items-center justify-between">
+                  <label class="block font-semibold text-ink-3">工作目錄 (選填)</label>
+                  <button type="button" @click="chooseWorkdir" class="text-[11px] text-accent hover:underline flex items-center gap-0.5">
+                    <Icon name="folder" :size="11" />
+                    <span>瀏覽</span>
+                  </button>
+                </div>
+                <div class="relative flex items-center">
+                  <input v-model="newTmpl.workdir" placeholder="/path/to/project" :class="[field, 'pr-7']" />
+                  <button type="button" @click="chooseWorkdir" class="absolute right-2 text-ink-3 hover:text-ink">
+                    <Icon name="folder" :size="12" />
+                  </button>
+                </div>
               </div>
             </div>
 
