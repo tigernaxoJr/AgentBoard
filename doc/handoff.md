@@ -25,6 +25,8 @@
 - [x] **Agent CLI 更新檢查 (CLI Updater)**：後端 `POST /api/agents/{id}/update` 整合 `agent --version` 與 `agent update`，前端提供「🚀 CLI 更新」彈窗支援一鍵檢查與更新 `agy` 與 `claude` CLI。
 - [x] **Agent 本地額度與用量監控 (Zero-Token CLI Usage)**：後端 `GET /api/agents/usage` 直接讀取本機 CLI 快取與日誌，前端側邊欄即時呈現 Claude 5h/7d 額度條、已用金額與 Agy 今日 Session/Token 計量，查詢過程完全不消耗任何 LLM Token。
 - [x] **Tauri System Tray 系統匣與生圖圖示**：透過生圖模型產製 2x2 Spritesheet，切割出全新 App Icon 與三種 System Tray 狀態圖示（`tray-idle`、`tray-active`、`tray-alert`），並完成 Rust System Tray 托盤選單與點擊視窗最小化/還原控制。
+- [x] **指南動態路徑與 Token 解析**：在 `get_api_config` 加入 `project_dir` 與 `token_file_path`，`ApiGuideModal` 會自動帶入使用者當前執行專案的真實絕對路徑與實際 Token，不再需要手動替換 `/path/to/agent_board`。
+- [x] **Agent 自我描述規格端點 (`GET /api/spec`)**：提供免 Token 驗證的精簡 Markdown 規格說明書，讓終端 AI 可透過單一 curl 一秒讀懂發派、輪詢、DAG 串接與結果回傳；「接入指南」彈窗首推一鍵複製 AI Prompt。
 
 ## 待辦功能（依建議優先序）
 

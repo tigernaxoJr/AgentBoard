@@ -98,6 +98,8 @@ pub fn create_router(state: ServerState) -> Router {
         )
         // SSE Events
         .route("/api/events", get(sse_events))
+        // Agent OpenAPI / Spec Documentation
+        .route("/api/spec", get(api_spec))
         // CORS 必須在驗證外層，瀏覽器的 preflight 才不會被擋
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -758,6 +760,47 @@ async fn sse_events(
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn api_spec() -> impl IntoResponse {
+    let spec = r#"# Agent Board API Specification for Agents
+
+This API lets coding agents and automated tools dispatch tasks, track progress, and collect results from the Agent Board.
+
+Base URL: http://127.0.0.1:18833
+Auth Header: Authorization: Bearer <API_TOKEN>
+
+## Workflow:
+1. Create a task:
+   POST /api/tasks
+   Headers: Content-Type: application/json, Authorization: Bearer <token>
+   Body:
+   {
+     "title": "Short title",
+     "prompt": "Detailed instructions for the agent",
+     "creator": "caller-name",
+     "assigned_agent": "agy" | "claude",
+     "dependency_ids": ["<upstream_task_id>"]  // optional
+   }
+   Response: 201 Created with JSON task object including "id" and "status": "queued".
+
+2. Wait / Poll for Completion:
+   GET /api/tasks/{id}
+   Poll until "status" becomes "completed" or "failed".
+   When "completed", the execution output and answer are in "result".
+
+3. Chain tasks (DAG):
+   When creating task B, set "dependency_ids": ["task_A_id"].
+   Write "{{dep.result}}" inside task B's prompt. The board automatically replaces it with task A's output when task A completes.
+
+4. Other Useful Endpoints:
+   - GET /api/tasks : List all tasks (optional query ?q=keyword)
+   - POST /api/tasks/{id}/cancel : Cancel a queued or running task
+   - GET /api/agents : List registered local agents and available models
+   - GET /api/events?token=<token> : Server-Sent Events (SSE) stream for live task updates
+"#;
+
+    ([(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")], spec)
 }
 
 pub async fn start_background_workers(

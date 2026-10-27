@@ -3,13 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
 import type { AgentDef, AgentUsageSummary, Artifact, CliSession, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
 
-interface ApiConfig {
+export interface ApiConfig {
   base_url: string;
   token: string;
+  project_dir?: string;
+  token_file_path?: string;
 }
 
 // API 需要 token：在 Tauri 視窗內向 Rust 端取得；純瀏覽器開發時改用 VITE_API_TOKEN
-const apiConfig: Promise<ApiConfig> = invoke<ApiConfig>("get_api_config").catch(() => ({
+export const apiConfig: Promise<ApiConfig> = invoke<ApiConfig>("get_api_config").catch(() => ({
   base_url: "http://127.0.0.1:18833",
   token: import.meta.env.VITE_API_TOKEN ?? "",
 }));

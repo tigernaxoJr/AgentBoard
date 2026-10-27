@@ -21,7 +21,7 @@
   * 樣式系統：**Tailwind CSS**
   * 狀態與通訊：Tauri IPC Events（桌面內部通訊） + 原生 SSE（即時看板更新）。
 * **通訊層**：
-  * **外部 Agent 任務/狀態控制**：REST API (`/api/tasks`)
+  * **外部 Agent 任務/狀態控制**：REST API (`/api/tasks`) 與自我描述規格 (`/api/spec`)
   * **桌面內部 UI 與 Rust 核心**：Tauri Commands & Events
   * **成果資料夾**：約定本地工作資料夾（預設 `./workspace/tasks/{id}/`）。
 

@@ -59,6 +59,10 @@ pub async fn require_token(
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    if req.uri().path() == "/api/spec" {
+        return Ok(next.run(req).await);
+    }
+
     let from_header = req
         .headers()
         .get(header::AUTHORIZATION)

@@ -14,6 +14,8 @@ use tokio::sync::broadcast;
 struct ApiConfig {
     base_url: String,
     token: String,
+    project_dir: String,
+    token_file_path: String,
 }
 
 /// 前端透過 IPC 取得 API 位址與 token（token 不經過網頁可讀取的地方）
@@ -93,9 +95,16 @@ pub fn run() {
 
             let port = env_or("PORT", 18833u16);
             let lease_timeout = env_or("LEASE_TIMEOUT_SECS", 60i64);
+            let project_dir = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".into());
+            let token_file_path = token_path.to_string_lossy().into_owned();
+
             app.manage(ApiConfig {
                 base_url: format!("http://127.0.0.1:{}", port),
                 token: token.clone(),
+                project_dir,
+                token_file_path,
             });
 
             // 建立 System Tray
