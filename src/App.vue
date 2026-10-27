@@ -6,11 +6,13 @@ import CreateTaskModal from "./components/CreateTaskModal.vue";
 import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
 import ApiGuideModal from "./components/ApiGuideModal.vue";
 import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
+import StatsModal from "./components/StatsModal.vue";
+import TemplateModal from "./components/TemplateModal.vue";
 import Icon from "./components/Icon.vue";
 import DependencyGraph from "./components/DependencyGraph.vue";
 import { notifyEnabled } from "./composables/useNotifications";
 import { STATUS_META, agentMeta, relativeTime } from "./ui";
-import type { CreateTaskPayload, RunOptions, Task, TaskStatus } from "./types";
+import type { CreateTaskPayload, RunOptions, Task, TaskStatus, TaskTemplate } from "./types";
 
 const {
   tasks,
@@ -37,12 +39,21 @@ const {
   followupTask,
   activeTaskArtifacts,
   fetchWorktree,
+  fetchWorktreeDiff,
   mergeWorktree,
   discardWorktree,
+  templates,
+  fetchTemplates,
+  createTemplate,
+  deleteTemplate,
+  fetchStats,
 } = useTasks();
 
 const showCreateModal = ref(false);
 const showApiGuide = ref(false);
+const showStatsModal = ref(false);
+const showTemplateModal = ref(false);
+const selectedTemplateForCreate = ref<TaskTemplate | null>(null);
 const runTarget = ref<Task | null>(null);
 // 看板 / 依賴關係圖
 const view = ref<"board" | "graph">("board");
@@ -293,6 +304,22 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           </button>
         </div>
 
+        <button
+          @click="showStatsModal = true"
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+        >
+          <span>📊</span>
+          <span>統計花費</span>
+        </button>
+
+        <button
+          @click="showTemplateModal = true"
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+        >
+          <span>📑</span>
+          <span>範本庫</span>
+        </button>
+
         <div class="ml-auto relative w-64 min-w-28 shrink">
           <Icon name="search" :size="14" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
           <input
@@ -385,6 +412,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           @close="selectedTaskId = null"
           :artifacts="activeTaskArtifacts"
           :load-worktree="fetchWorktree"
+          :load-worktree-diff="fetchWorktreeDiff"
           @merge-worktree="handleMergeWorktree"
           @discard-worktree="handleDiscardWorktree"
           @cancel="handleCancel"
@@ -398,8 +426,32 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <!-- Create Task Modal -->
     <CreateTaskModal
       v-if="showCreateModal"
+      :initial-template="selectedTemplateForCreate"
       @create="handleCreateTask"
-      @close="showCreateModal = false"
+      @open-templates="showTemplateModal = true"
+      @close="showCreateModal = false; selectedTemplateForCreate = null"
+    />
+
+    <!-- Templates Modal -->
+    <TemplateModal
+      v-if="showTemplateModal"
+      :templates="templates"
+      :fetch-templates="fetchTemplates"
+      :create-template="createTemplate"
+      :delete-template="deleteTemplate"
+      @select="(tmpl) => {
+        selectedTemplateForCreate = tmpl;
+        showTemplateModal = false;
+        showCreateModal = true;
+      }"
+      @close="showTemplateModal = false"
+    />
+
+    <!-- Stats Modal -->
+    <StatsModal
+      v-if="showStatsModal"
+      :fetch-stats="fetchStats"
+      @close="showStatsModal = false"
     />
 
     <!-- API & Agent Integration Guide Modal -->

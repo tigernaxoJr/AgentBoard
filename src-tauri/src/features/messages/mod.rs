@@ -42,7 +42,7 @@ impl MessageService {
         .bind(&msg.sender)
         .bind(&msg.receiver)
         .bind(&msg.payload)
-        .bind(&msg.read_status)
+        .bind(msg.read_status)
         .bind(&msg.created_at)
         .execute(pool)
         .await?;

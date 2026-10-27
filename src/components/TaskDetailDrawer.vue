@@ -12,6 +12,7 @@ const props = defineProps<{
   logs: TaskLog[];
   artifacts: Artifact[];
   loadWorktree: (taskId: string) => Promise<WorktreeStatus>;
+  loadWorktreeDiff?: (taskId: string, path?: string) => Promise<string>;
 }>();
 
 const emit = defineEmits<{
@@ -185,11 +186,20 @@ const logLevelClass = (level: string) =>
           <dt class="text-ink-3">工作階段</dt>
           <dd class="font-mono text-ink-2 truncate select-text" :title="task.session_id">{{ task.session_id }}</dd>
         </template>
-        <template v-if="task.depends_on_task_id">
+        <template v-if="task.dependency_ids && task.dependency_ids.length > 0">
+          <dt class="text-ink-3">前置任務 ({{ task.dependency_ids.length }})</dt>
+          <dd class="flex flex-wrap items-center gap-1.5 font-mono text-amber-600 dark:text-amber-400 select-text">
+            <span v-for="depId in task.dependency_ids" :key="depId" class="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1 py-0.5">
+              <Icon name="link" :size="10" />
+              <button @click="emit('select', depId)" class="hover:underline">#{{ depId.slice(0, 8) }}</button>
+            </span>
+          </dd>
+        </template>
+        <template v-else-if="task.depends_on_task_id">
           <dt class="text-ink-3">前置任務</dt>
           <dd class="flex items-center gap-1 font-mono text-amber-600 dark:text-amber-400 select-text">
             <Icon name="link" :size="12" />
-            #{{ task.depends_on_task_id.slice(0, 8) }}
+            <button @click="emit('select', task.depends_on_task_id)" class="hover:underline">#{{ task.depends_on_task_id.slice(0, 8) }}</button>
           </dd>
         </template>
       </dl>
@@ -272,6 +282,7 @@ const logLevelClass = (level: string) =>
         v-if="task.branch"
         :task="task"
         :load="loadWorktree"
+        :load-diff="loadWorktreeDiff"
         @merge="emit('merge-worktree')"
         @discard="emit('discard-worktree')"
       />

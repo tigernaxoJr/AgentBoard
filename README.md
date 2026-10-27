@@ -86,6 +86,57 @@ python3 scripts/runner.py --agent agy --interval 3
 
 ---
 
+## 🧩 範本、統計與 Diff API
+
+| 路徑 | 說明 |
+| --- | --- |
+| `GET/POST /api/templates` | 列出 / 建立任務範本 |
+| `GET/PUT/DELETE /api/templates/{id}` | 取得 / 更新 / 刪除範本（更新時選填欄位傳空字串 = 清空） |
+| `GET /api/stats?from=YYYY-MM-DD&to=YYYY-MM-DD` | 花費、Token、耗時統計（`to` 含當天；`by_date` 為升冪） |
+| `GET /api/tasks/{id}/worktree/diff?path=` | worktree 相對 base commit 的完整 diff（含未追蹤新檔案，不修改 index） |
+
+建立任務時可用 `dependency_ids` 傳多個前置任務：全部完成才會解鎖，任一失敗則連鎖失敗。
+
+---
+
+## 🔌 MCP Server 支援 (Model Context Protocol)
+
+專案提供標準 MCP Server 伺服端（`scripts/mcp_server.py`），支援以 stdio 傳輸，免裝外部套件（純 Python 標準庫）。
+讓 Claude Code、Claude Desktop、agy 或任何支援 MCP 的 Agent 能直接以原生工具呼叫看板，不必再寫 curl。
+
+### 支援工具清單
+* `list_tasks`：搜尋/檢視任務清單
+* `get_task`：取得任務詳情、結果、日誌與 Token
+* `create_task`：建立新任務（支援 model, workdir, depends_on_task_id / dependency_ids（多重依賴）, isolate 等）
+* `spawn_task`：由看板立即啟動子程序執行
+* `dispatch_task`：排入待辦派工給 Runner
+* `followup_task`：追加後續指示（接續 session）
+* `requeue_task` / `cancel_task`：重試或取消
+* `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案
+* `list_agents` / `list_runners` / `send_message`：查詢可用 Agent、Runner 與留訊息
+
+### 配置方式範例
+
+#### 1. Claude CLI / Claude Code
+```bash
+claude mcp add agent-board python3 /path/to/agent_board/scripts/mcp_server.py
+```
+
+#### 2. Claude Desktop (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "agent-board": {
+      "command": "python3",
+      "args": ["/path/to/agent_board/scripts/mcp_server.py"]
+    }
+  }
+}
+```
+*(MCP Server 會自動從系統預設目錄讀取 `api_token`，亦支援 `--token` 或 `AGENT_BOARD_TOKEN` 環境變數)*
+
+---
+
 ## 📁 Agent 檔案交換規範 (File Exchange)
 
 多個 Agent 之間需要交接成果檔案時，依循以下機制：

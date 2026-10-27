@@ -7,6 +7,7 @@ import Icon from "./Icon.vue";
 const props = defineProps<{
   task: Task;
   load: (taskId: string) => Promise<WorktreeStatus>;
+  loadDiff?: (taskId: string, path?: string) => Promise<string>;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +18,27 @@ const emit = defineEmits<{
 const status = ref<WorktreeStatus | null>(null);
 const error = ref<string | null>(null);
 const loading = ref(false);
+
+const fullDiff = ref<string | null>(null);
+const showFullDiff = ref(false);
+const loadingDiff = ref(false);
+
+const toggleDiff = async () => {
+  if (showFullDiff.value) {
+    showFullDiff.value = false;
+    return;
+  }
+  if (!props.loadDiff) return;
+  loadingDiff.value = true;
+  try {
+    fullDiff.value = await props.loadDiff(props.task.id);
+    showFullDiff.value = true;
+  } catch (err: any) {
+    alert("讀取 diff 失敗: " + err.message);
+  } finally {
+    loadingDiff.value = false;
+  }
+};
 
 const refresh = async () => {
   loading.value = true;
@@ -70,7 +92,29 @@ const reveal = () => revealItemInDir(props.task.worktree_path!).catch((err) => a
             <div class="mb-1 text-[11px] text-ink-3">未 commit 的變更 · {{ status.changes.length }}</div>
             <div v-for="c in status.changes" :key="c" class="truncate font-mono text-[11px] text-ink-2 select-text whitespace-pre">{{ c }}</div>
           </div>
-          <pre v-if="status.diff_stat" class="max-h-32 overflow-auto rounded-md bg-raised/60 p-2 font-mono text-[11px] leading-relaxed text-ink-2 select-text">{{ status.diff_stat }}</pre>
+          <div v-if="status.diff_stat" class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] text-ink-3">變更統計</span>
+              <button
+                v-if="loadDiff"
+                type="button"
+                @click="toggleDiff"
+                class="font-mono text-[11px] text-accent hover:underline flex items-center gap-1"
+              >
+                <span>{{ showFullDiff ? "隱藏完整 Diff" : "檢視完整 Diff" }}</span>
+                <span v-if="loadingDiff" class="animate-spin text-[10px]">⧗</span>
+              </button>
+            </div>
+            <pre class="max-h-28 overflow-auto rounded-md bg-raised/60 p-2 font-mono text-[11px] leading-relaxed text-ink-2 select-text">{{ status.diff_stat }}</pre>
+
+            <div v-if="showFullDiff" class="mt-2 rounded-lg border border-line bg-surface overflow-hidden">
+              <div class="flex items-center justify-between border-b border-line bg-raised/40 px-2.5 py-1 text-[11px] font-semibold text-ink-3">
+                <span>完整 Git Diff</span>
+                <button @click="showFullDiff = false" class="hover:text-ink">收起</button>
+              </div>
+              <pre class="max-h-80 overflow-auto p-2.5 font-mono text-[11px] leading-relaxed text-ink select-text whitespace-pre">{{ fullDiff || '（無具體 diff 內容）' }}</pre>
+            </div>
+          </div>
         </template>
       </div>
 

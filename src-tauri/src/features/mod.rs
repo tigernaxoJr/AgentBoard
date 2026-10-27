@@ -3,5 +3,7 @@ pub mod artifacts;
 pub mod execution;
 pub mod messages;
 pub mod runners;
+pub mod stats;
 pub mod tasks;
+pub mod templates;
 pub mod worktree;

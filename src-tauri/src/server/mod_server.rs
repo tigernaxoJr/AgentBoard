@@ -4,7 +4,9 @@ use crate::features::execution::{SpawnError, Spawner};
 use crate::features::runners::Runners;
 use crate::features::worktree;
 use crate::features::messages::{MessageService, SendMessageDto};
+use crate::features::stats::{StatsQuery, StatsService};
 use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService};
+use crate::features::templates::{CreateTemplateDto, TemplateService, UpdateTemplateDto};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -57,6 +59,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/requeue", post(requeue_task))
         .route("/api/tasks/{id}/followup", post(followup_task))
         .route("/api/tasks/{id}/worktree", get(worktree_status))
+        .route("/api/tasks/{id}/worktree/diff", get(worktree_diff))
         .route("/api/tasks/{id}/worktree/merge", post(worktree_merge))
         .route("/api/tasks/{id}/worktree/discard", post(worktree_discard))
         .route("/api/agents", get(list_agents))
@@ -70,6 +73,11 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/artifacts", post(create_artifact).get(list_artifacts))
         // Messages
         .route("/api/messages", post(send_message).get(get_messages))
+        // Stats
+        .route("/api/stats", get(get_stats))
+        // Templates
+        .route("/api/templates", post(create_template).get(list_templates))
+        .route("/api/templates/{id}", get(get_template).put(update_template).delete(delete_template))
         // SSE Events
         .route("/api/events", get(sse_events))
         // CORS 必須在驗證外層，瀏覽器的 preflight 才不會被擋
@@ -134,8 +142,8 @@ async fn claim_task(
     touch_runner(&state, &dto.agent_id, task.as_ref().map(|t| t.task.id.clone()));
 
     // 隔離執行：由伺服器建立 worktree，Runner 只需在回傳的 run_dir 執行
-    if let Some(claimed) = task.as_mut() {
-        if let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await {
+    if let Some(claimed) = task.as_mut()
+        && let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await {
             let log = AddTaskLogDto { agent_id: dto.agent_id.clone(), level: Some("ERROR".into()), message: e };
             let _ = TaskService::add_log(&state.pool, &claimed.task.id, log).await;
             let _ = TaskService::fail_task(&state.pool, &claimed.task.id, &claimed.lease_id).await;
@@ -145,7 +153,6 @@ async fn claim_task(
             });
             return Ok(Json(None));
         }
-    }
 
     if let Some(ref t) = task {
         // 廣播不含租約 ID，只有領取者拿得到
@@ -297,6 +304,26 @@ async fn worktree_status(
     worktree::status(&task).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
 }
 
+#[derive(Deserialize)]
+pub struct WorktreeDiffQuery {
+    pub path: Option<String>,
+}
+
+async fn worktree_diff(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Query(query): Query<WorktreeDiffQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let task = TaskService::get_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
+    let diff_text = worktree::diff(&task, query.path.as_deref())
+        .await
+        .map_err(|e| (StatusCode::CONFLICT, e))?;
+    Ok(Json(serde_json::json!({ "diff": diff_text })))
+}
+
 async fn worktree_merge(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -340,11 +367,10 @@ fn touch_runner(state: &ServerState, agent_id: &str, current_task: Option<String
 
 /// 心跳 / 完成 / 失敗只帶任務 ID，從任務找出是哪個 Agent 的 Runner
 async fn touch_runner_for_task(state: &ServerState, task_id: &str, running: bool) {
-    if let Ok(Some(task)) = TaskService::get_task(&state.pool, task_id).await {
-        if let Some(agent) = task.assigned_agent {
+    if let Ok(Some(task)) = TaskService::get_task(&state.pool, task_id).await
+        && let Some(agent) = task.assigned_agent {
             touch_runner(state, &agent, running.then(|| task_id.to_string()));
         }
-    }
 }
 
 const LEASE_MISMATCH: &str = "Task not running or lease mismatch";
@@ -518,6 +544,78 @@ async fn get_messages(
     Ok(Json(messages))
 }
 
+// Stats Handler
+async fn get_stats(
+    State(state): State<ServerState>,
+    Query(query): Query<StatsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let stats = StatsService::get_stats(&state.pool, query)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(stats))
+}
+
+// Template Handlers
+async fn list_templates(
+    State(state): State<ServerState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let templates = TemplateService::list(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(templates))
+}
+
+async fn get_template(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let template = TemplateService::get(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match template {
+        Some(t) => Ok(Json(t)),
+        None => Err((StatusCode::NOT_FOUND, "Template not found".to_string())),
+    }
+}
+
+async fn create_template(
+    State(state): State<ServerState>,
+    Json(dto): Json<CreateTemplateDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let template = TemplateService::create(&state.pool, dto)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(template)))
+}
+
+async fn update_template(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(dto): Json<UpdateTemplateDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let template = TemplateService::update(&state.pool, &id, dto)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match template {
+        Some(t) => Ok(Json(t)),
+        None => Err((StatusCode::NOT_FOUND, "Template not found".to_string())),
+    }
+}
+
+async fn delete_template(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let deleted = TemplateService::delete(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Template not found".to_string()))
+    }
+}
+
 async fn sse_events(
     State(state): State<ServerState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, axum::Error>>> {
@@ -544,14 +642,13 @@ pub async fn start_background_workers(
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(check_every));
         loop {
             interval.tick().await;
-            if let Ok(recovered) = TaskService::recover_timed_out_tasks(&pool, lease_timeout_secs).await {
-                if recovered.requeued + recovered.failed > 0 {
+            if let Ok(recovered) = TaskService::recover_timed_out_tasks(&pool, lease_timeout_secs).await
+                && recovered.requeued + recovered.failed > 0 {
                     let _ = event_tx.send(BoardEvent {
                         event_type: "task_recovered".to_string(),
                         payload: serde_json::to_value(&recovered).unwrap_or_default(),
                     });
                 }
-            }
         }
     });
 }

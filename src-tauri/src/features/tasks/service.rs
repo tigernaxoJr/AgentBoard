@@ -12,6 +12,8 @@ pub struct CreateTaskDto {
     pub creator: Option<String>,
     pub assigned_agent: Option<String>,
     pub depends_on_task_id: Option<String>,
+    /// 多重依賴 ID 陣列（若提供則同時寫入 task_dependencies）
+    pub dependency_ids: Option<Vec<String>>,
     pub model: Option<String>,
     pub workdir: Option<String>,
     pub auto_approve: Option<bool>,
@@ -56,25 +58,61 @@ pub const DEP_RESULT_PLACEHOLDER: &str = "{{dep.result}}";
 
 impl ClaimedTask {
     async fn new(pool: &Pool<Sqlite>, task: Task, lease_id: String) -> Result<Self, sqlx::Error> {
-        // 只替換實際執行的 argv，資料庫裡的 prompt 保留範本原樣
+        // 只替換實際執行的 runnable argv，Task 本身的 prompt 保留範本原樣
+        let rendered_prompt = Self::render_prompt(pool, &task).await?;
         let mut runnable = task.clone();
-        runnable.prompt = Self::render_prompt(pool, &task).await?;
+        runnable.prompt = rendered_prompt;
         let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &runnable));
         let run_dir = task.workdir.clone();
         Ok(Self { task, lease_id, command, run_dir })
     }
 
     async fn render_prompt(pool: &Pool<Sqlite>, task: &Task) -> Result<String, sqlx::Error> {
-        let Some(dep_id) = task.depends_on_task_id.as_deref().filter(|_| task.prompt.contains(DEP_RESULT_PLACEHOLDER)) else {
-            return Ok(task.prompt.clone());
-        };
-        let result: Option<String> = sqlx::query_scalar("SELECT result FROM tasks WHERE id = ?")
-            .bind(dep_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten();
-        let result = result.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| "（前置任務沒有回報結果）".into());
-        Ok(task.prompt.replace(DEP_RESULT_PLACEHOLDER, &result))
+        let mut prompt = task.prompt.clone();
+        if !prompt.contains("{{dep") {
+            return Ok(prompt);
+        }
+
+        // 取得所有關聯的前置任務結果
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT dep.id, dep.result FROM task_dependencies td
+            JOIN tasks dep ON dep.id = td.depends_on_task_id
+            WHERE td.task_id = ?1
+            "#,
+        )
+        .bind(&task.id)
+        .fetch_all(pool)
+        .await?;
+
+        // 1. 支援個別短 ID 替換：{{dep.<短ID>.result}}
+        for (id, res) in &rows {
+            let short = if id.len() >= 8 { &id[..8] } else { id.as_str() };
+            let key = format!("{{{{dep.{}.result}}}}", short);
+            let val = res.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（無結果）");
+            prompt = prompt.replace(&key, val);
+        }
+
+        // 2. 替換通用 {{dep.result}}：若有多個前置任務則合併格式化，若單一前置則直接替換
+        if prompt.contains(DEP_RESULT_PLACEHOLDER) {
+            let combined = if rows.is_empty() {
+                "（無前置任務結果）".to_string()
+            } else if rows.len() == 1 {
+                rows[0].1.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（前置任務沒有回報結果）").to_string()
+            } else {
+                rows.iter()
+                    .map(|(id, res)| {
+                        let short = if id.len() >= 8 { &id[..8] } else { id.as_str() };
+                        let val = res.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or("（無結果）");
+                        format!("### 前置任務 #{short} 結果：\n{val}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            };
+            prompt = prompt.replace(DEP_RESULT_PLACEHOLDER, &combined);
+        }
+
+        Ok(prompt)
     }
 }
 
@@ -128,18 +166,30 @@ pub struct TaskService;
 impl TaskService {
     /// 建立任務
     pub async fn create_task(pool: &Pool<Sqlite>, dto: CreateTaskDto) -> Result<Task, sqlx::Error> {
+        let mut dep_ids: Vec<String> = Vec::new();
+        for d in dto.dependency_ids.unwrap_or_default().into_iter().chain(dto.depends_on_task_id.clone()) {
+            let d = d.trim().to_string();
+            if !d.is_empty() && !dep_ids.contains(&d) {
+                dep_ids.push(d);
+            }
+        }
+        let primary_dep = dep_ids.first().cloned();
+
         let mut task = Task::new(
             dto.title,
             dto.prompt,
             dto.creator.unwrap_or_else(|| "human".to_string()),
             dto.assigned_agent,
-            dto.depends_on_task_id,
+            primary_dep,
         );
+        task.dependency_ids = dep_ids.clone();
         task.model = dto.model.filter(|m| !m.is_empty());
         task.workdir = dto.workdir.filter(|w| !w.is_empty());
         task.auto_approve = dto.auto_approve.unwrap_or(false);
         task.isolate = dto.isolate.unwrap_or(false);
 
+        // 任務與依賴同一個交易：依賴 ID 不存在（FK 失敗）時整筆回滾，避免產生「無依賴」的任務被直接執行
+        let mut tx = pool.begin().await?;
         sqlx::query(
             r#"
             INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, model, workdir, auto_approve, isolate, created_at, updated_at)
@@ -160,10 +210,39 @@ impl TaskService {
         .bind(task.isolate)
         .bind(&task.created_at)
         .bind(&task.updated_at)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
+        for dep_id in &dep_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)"
+            )
+            .bind(&task.id)
+            .bind(dep_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
         Ok(task)
+    }
+
+    async fn populate_dependencies(pool: &Pool<Sqlite>, tasks: &mut [Task]) -> Result<(), sqlx::Error> {
+        if tasks.is_empty() { return Ok(()); }
+        let deps: Vec<(String, String)> = sqlx::query_as(
+            "SELECT task_id, depends_on_task_id FROM task_dependencies"
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut by_task: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for (tid, did) in deps {
+            by_task.entry(tid).or_default().push(did);
+        }
+        for t in tasks.iter_mut() {
+            t.dependency_ids = by_task.remove(&t.id).unwrap_or_default();
+        }
+        Ok(())
     }
 
     /// 列出任務：排隊中 / 執行中全部回傳，已結束的只回傳最近 FINISHED_LIST_LIMIT 筆
@@ -188,10 +267,12 @@ impl TaskService {
             "#
         };
         let q = sqlx::query_as::<_, Task>(sql).bind(FINISHED_LIST_LIMIT);
-        match query {
-            Some(text) => q.bind(text).fetch_all(pool).await,
-            None => q.fetch_all(pool).await,
-        }
+        let mut tasks = match query {
+            Some(text) => q.bind(text).fetch_all(pool).await?,
+            None => q.fetch_all(pool).await?,
+        };
+        Self::populate_dependencies(pool, &mut tasks).await?;
+        Ok(tasks)
     }
 
     /// 取得單一任務
@@ -202,14 +283,21 @@ impl TaskService {
         .bind(id)
         .fetch_optional(pool)
         .await?;
-        Ok(task)
+        if let Some(t) = task {
+            let mut list = vec![t];
+            Self::populate_dependencies(pool, &mut list).await?;
+            Ok(list.into_iter().next())
+        } else {
+            Ok(None)
+        }
     }
 
     /// 原子性領取任務（Claim）
     /// 條件：
     /// 1. status = 'queued'
     /// 2. assigned_agent IS NULL 或等於此 agent_id
-    /// 3. 若有 depends_on_task_id，該依賴任務必須為 'completed'
+    /// 3. task_dependencies 內的所有前置任務都必須為 'completed'
+    ///
     /// 以單一 UPDATE ... RETURNING 完成挑選與標記，並發領取時不會重複發出同一任務
     pub async fn claim_task(pool: &Pool<Sqlite>, agent_id: &str) -> Result<Option<ClaimedTask>, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
@@ -225,12 +313,10 @@ impl TaskService {
                 SELECT t.id FROM tasks t
                 WHERE t.status = 'queued'
                   AND (t.assigned_agent IS NULL OR t.assigned_agent = ?1)
-                  AND (
-                    t.depends_on_task_id IS NULL
-                    OR EXISTS (
-                      SELECT 1 FROM tasks dep
-                      WHERE dep.id = t.depends_on_task_id AND dep.status = 'completed'
-                    )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM task_dependencies td
+                    JOIN tasks dep ON dep.id = td.depends_on_task_id
+                    WHERE td.task_id = t.id AND dep.status != 'completed'
                   )
                 ORDER BY t.priority DESC, t.created_at ASC
                 LIMIT 1
@@ -272,9 +358,10 @@ impl TaskService {
                 auto_approve = COALESCE(?6, auto_approve),
                 isolate = COALESCE(?8, isolate)
             WHERE id = ?7 AND status = 'queued'
-              AND (
-                depends_on_task_id IS NULL
-                OR EXISTS (SELECT 1 FROM tasks dep WHERE dep.id = tasks.depends_on_task_id AND dep.status = 'completed')
+              AND NOT EXISTS (
+                SELECT 1 FROM task_dependencies td
+                JOIN tasks dep ON dep.id = td.depends_on_task_id
+                WHERE td.task_id = tasks.id AND dep.status != 'completed'
               )
             RETURNING *
             "#,
@@ -515,7 +602,13 @@ impl TaskService {
         let mut tx = pool.begin().await?;
 
         let dependency_failed: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM tasks t JOIN tasks dep ON dep.id = t.depends_on_task_id WHERE t.id = ? AND dep.status = 'failed')",
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM task_dependencies td
+                JOIN tasks dep ON dep.id = td.depends_on_task_id
+                WHERE td.task_id = ?1 AND dep.status = 'failed'
+            )
+            "#,
         )
         .bind(task_id)
         .fetch_one(&mut *tx)
@@ -544,12 +637,12 @@ impl TaskService {
         let downstream = sqlx::query(
             r#"
             WITH RECURSIVE downstream(id) AS (
-                SELECT id FROM tasks WHERE depends_on_task_id = ?1 AND status = 'failed' AND attempts = 0
+                SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?1
                 UNION
-                SELECT t.id FROM tasks t JOIN downstream d ON t.depends_on_task_id = d.id
-                WHERE t.status = 'failed' AND t.attempts = 0
+                SELECT td.task_id FROM task_dependencies td JOIN downstream d ON td.depends_on_task_id = d.id
             )
-            UPDATE tasks SET status = 'queued', updated_at = ?2 WHERE id IN (SELECT id FROM downstream)
+            UPDATE tasks SET status = 'queued', updated_at = ?2
+            WHERE id IN (SELECT id FROM downstream) AND status = 'failed' AND attempts = 0
             "#,
         )
         .bind(task_id)
@@ -607,7 +700,11 @@ impl TaskService {
                 r#"
                 UPDATE tasks SET status = 'failed', updated_at = ?
                 WHERE status = 'queued'
-                  AND depends_on_task_id IN (SELECT id FROM tasks WHERE status = 'failed')
+                  AND id IN (
+                    SELECT td.task_id FROM task_dependencies td
+                    JOIN tasks dep ON dep.id = td.depends_on_task_id
+                    WHERE dep.status = 'failed'
+                  )
                 "#,
             )
             .bind(&now)
@@ -651,7 +748,7 @@ impl TaskService {
         .execute(pool)
         .await?;
 
-        if LOG_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % LOG_TRIM_EVERY == 0 {
+        if LOG_INSERTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(LOG_TRIM_EVERY) {
             Self::trim_logs(pool, task_id).await?;
         }
         Ok(log)
@@ -1095,5 +1192,23 @@ mod tests {
         // 重新領取時清空上一次的結果
         let claimed = TaskService::claim_specific(&pool, &task.id, "agy", &RunOptions::default()).await.unwrap().unwrap();
         assert_eq!((claimed.task.result, claimed.task.cost_usd, claimed.task.input_tokens), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn create_task_with_missing_dependency_is_rolled_back() {
+        let pool = memory_pool().await;
+        let res = TaskService::create_task(
+            &pool,
+            CreateTaskDto {
+                title: "x".into(),
+                prompt: "p".into(),
+                dependency_ids: Some(vec!["no-such-task".into()]),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(res.is_err());
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
     }
 }

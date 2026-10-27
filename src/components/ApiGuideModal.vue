@@ -53,6 +53,8 @@ const endpoints: [string, string, string][] = [
   ["GET", "/api/runners", "各 Agent 的 Runner 在線狀態"],
 ];
 
+const mcpSnippet = `claude mcp add agent-board python3 /path/to/agent_board/scripts/mcp_server.py`;
+
 const systemdSnippet = `mkdir -p ~/.config/systemd/user
 cp scripts/agent-board-runner.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -121,10 +123,29 @@ systemctl --user enable --now agent-board-runner.service`;
           </p>
         </div>
 
-        <!-- 說明 3 -->
+        <!-- 說明 3: MCP Server -->
         <div>
           <h4 class="font-bold text-sm text-slate-900 dark:text-slate-100 mb-1.5 flex items-center gap-1.5">
-            <span>3. 開機自動執行 agy (無需手動開終端)</span>
+            <span>3. 使用 MCP 工具接入 (Claude / agy)</span>
+          </h4>
+          <p class="text-slate-500 mb-2 leading-relaxed">
+            透過隨附的 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono">scripts/mcp_server.py</code>，支援以標準 MCP (Model Context Protocol) 形式呼叫看板（含 <code class="font-mono">create_task</code>, <code class="font-mono">list_tasks</code>, <code class="font-mono">spawn_task</code> 等工具），Agent 不用手動打 curl：
+          </p>
+          <div class="relative bg-slate-950 text-slate-200 rounded-xl p-3 font-mono text-[11px] border border-slate-800">
+            <button
+              @click="copyText(mcpSnippet, 4)"
+              class="absolute top-2.5 right-2.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+            >
+              {{ copiedIndex === 4 ? "✓ 已複製" : "複製指令" }}
+            </button>
+            <pre class="overflow-x-auto whitespace-pre leading-relaxed">{{ mcpSnippet }}</pre>
+          </div>
+        </div>
+
+        <!-- 說明 4: Systemd -->
+        <div>
+          <h4 class="font-bold text-sm text-slate-900 dark:text-slate-100 mb-1.5 flex items-center gap-1.5">
+            <span>4. 開機自動執行 agy (無需手動開終端)</span>
           </h4>
           <p class="text-slate-500 mb-2 leading-relaxed">
             將專案隨附的 Runner 註冊為 Linux 系統服務，開機即可常駐待命（0 Token 消耗，領到任務才喚醒 agy）：
@@ -140,9 +161,9 @@ systemctl --user enable --now agent-board-runner.service`;
           </div>
         </div>
 
-        <!-- 說明 4 -->
+        <!-- 說明 5: 其他 API -->
         <div>
-          <h4 class="font-bold text-sm text-slate-900 dark:text-slate-100 mb-1.5">4. 其他常用 API</h4>
+          <h4 class="font-bold text-sm text-slate-900 dark:text-slate-100 mb-1.5">5. 其他常用 API</h4>
           <div class="rounded-xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
             <div v-for="[method, path, desc] in endpoints" :key="path" class="flex items-baseline gap-2 px-3 py-2">
               <span class="w-9 shrink-0 font-mono text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">{{ method }}</span>

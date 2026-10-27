@@ -1,7 +1,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
-import type { AgentDef, Artifact, CreateTaskPayload, RunnerStatus, RunOptions, Task, TaskLog, WorktreeStatus } from "../types";
+import type { AgentDef, Artifact, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -138,6 +138,12 @@ export function useTasks() {
     if (!res.ok) throw new Error(await res.text());
     return (await res.json()) as WorktreeStatus;
   };
+  const fetchWorktreeDiff = async (taskId: string, path?: string) => {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+    const res = await api(`/api/tasks/${taskId}/worktree/diff${qs}`);
+    if (!res.ok) throw new Error(await res.text());
+    return ((await res.json()) as { diff: string }).diff;
+  };
   const mergeWorktree = async (taskId: string) => {
     const res = await api(`/api/tasks/${taskId}/worktree/merge`, { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
@@ -145,6 +151,51 @@ export function useTasks() {
     return ((await res.json()) as { message: string }).message;
   };
   const discardWorktree = (taskId: string) => postTaskAction(taskId, "worktree/discard");
+
+  const templates = ref<TaskTemplate[]>([]);
+  const fetchTemplates = async () => {
+    try {
+      const res = await api("/api/templates");
+      if (res.ok) {
+        templates.value = await res.json();
+      }
+    } catch (e) {
+      console.error("Failed to fetch templates", e);
+    }
+  };
+
+  const createTemplate = async (tmpl: Partial<TaskTemplate>) => {
+    const res = await api("/api/templates", {
+      method: "POST",
+      body: JSON.stringify(tmpl),
+    });
+    if (!res.ok) throw new Error("建立範本失敗");
+    const created = (await res.json()) as TaskTemplate;
+    templates.value.unshift(created);
+    return created;
+  };
+
+  const deleteTemplate = async (id: string) => {
+    const res = await api(`/api/templates/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("刪除範本失敗");
+    templates.value = templates.value.filter((t) => t.id !== id);
+  };
+
+  const fetchStats = async (from?: string, to?: string): Promise<FullStatsResponse | null> => {
+    try {
+      let path = "/api/stats";
+      const params = new URLSearchParams();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      const qs = params.toString();
+      if (qs) path += `?${qs}`;
+      const res = await api(path);
+      if (res.ok) return (await res.json()) as FullStatsResponse;
+    } catch (e) {
+      console.error("Failed to fetch stats", e);
+    }
+    return null;
+  };
 
   // 即時監聽後端 SSE 事件
   const initSSE = async () => {
@@ -259,7 +310,13 @@ export function useTasks() {
     followupTask,
     activeTaskArtifacts,
     fetchWorktree,
+    fetchWorktreeDiff,
     mergeWorktree,
     discardWorktree,
+    templates,
+    fetchTemplates,
+    createTemplate,
+    deleteTemplate,
+    fetchStats,
   };
 }

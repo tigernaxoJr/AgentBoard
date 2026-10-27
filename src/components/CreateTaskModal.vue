@@ -1,17 +1,32 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import type { CreateTaskPayload } from "../types";
+import { ref, watch } from "vue";
+import type { CreateTaskPayload, TaskTemplate } from "../types";
 import { agentMeta } from "../ui";
 import Icon from "./Icon.vue";
+
+const props = defineProps<{
+  initialTemplate?: TaskTemplate | null;
+}>();
 
 const emit = defineEmits<{
   (e: "create", payload: CreateTaskPayload): void;
   (e: "close"): void;
+  (e: "openTemplates"): void;
 }>();
 
-const title = ref("");
-const prompt = ref("");
-const assignedAgent = ref<string>("agy");
+const title = ref(props.initialTemplate?.title || "");
+const prompt = ref(props.initialTemplate?.prompt || "");
+const assignedAgent = ref<string>(props.initialTemplate?.assigned_agent || "agy");
+// 在已開啟的視窗內才選範本時，prop 會後來才變，需套用進欄位
+watch(
+  () => props.initialTemplate,
+  (t) => {
+    if (!t) return;
+    title.value = t.title;
+    prompt.value = t.prompt;
+    assignedAgent.value = t.assigned_agent || "agy";
+  },
+);
 const creator = ref<string>("claude");
 const dependsOnTaskId = ref<string>("");
 // 與後端 DEP_RESULT_PLACEHOLDER 一致
@@ -29,12 +44,17 @@ const creatorOptions = ["claude", "human", "agy"];
 
 const handleSubmit = () => {
   if (!title.value.trim() || !prompt.value.trim()) return;
+  const rawDeps = dependsOnTaskId.value
+    .split(/[,，\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   emit("create", {
     title: title.value.trim(),
     prompt: prompt.value.trim(),
     creator: creator.value.trim() || "human",
     assigned_agent: assignedAgent.value === "none" ? null : assignedAgent.value,
-    depends_on_task_id: dependsOnTaskId.value.trim() || null,
+    depends_on_task_id: rawDeps[0] || null,
+    dependency_ids: rawDeps,
   });
 };
 
@@ -53,7 +73,17 @@ const field = "w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm
       class="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
     >
       <div class="flex items-center justify-between border-b border-line px-5 py-3.5">
-        <h3 class="text-sm font-semibold text-ink">建立新任務</h3>
+        <div class="flex items-center gap-2">
+          <h3 class="text-sm font-semibold text-ink">建立新任務</h3>
+          <button
+            type="button"
+            @click="emit('openTemplates')"
+            class="flex items-center gap-1 rounded-md bg-raised px-2 py-0.5 text-xs text-ink-2 hover:bg-raised/80 hover:text-ink transition-colors"
+          >
+            <span>📑</span>
+            <span>選擇範本</span>
+          </button>
+        </div>
         <button
           type="button"
           @click="emit('close')"
@@ -120,16 +150,16 @@ const field = "w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm
             </div>
           </div>
           <div>
-            <span class="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-ink-3">前置任務 ID（選填）</span>
+            <span class="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-ink-3">前置任務 ID（支援多個，以逗號分隔）</span>
             <input
               v-model="dependsOnTaskId"
-              placeholder="6859560f-…"
+              placeholder="id-1, id-2, …"
               :class="[field, 'py-1.5 font-mono text-xs']"
             />
             <p v-if="dependsOnTaskId.trim()" class="mt-1.5 text-[11px] leading-relaxed text-ink-3">
               Prompt 裡的
               <button type="button" @click="insertDepResult" class="font-mono text-accent hover:underline" title="插入到 Prompt 結尾">{{ DEP_RESULT }}</button>
-              執行時會換成前置任務的結果
+              執行時會換成前置任務結果（亦可寫 <code class="font-mono text-[10px]">dep.&lt;短ID&gt;.result</code>）
             </p>
           </div>
         </div>

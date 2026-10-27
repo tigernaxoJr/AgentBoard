@@ -79,6 +79,32 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS task_templates (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            title TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            assigned_agent TEXT,
+            model TEXT,
+            workdir TEXT,
+            auto_approve INTEGER NOT NULL DEFAULT 1,
+            isolate INTEGER NOT NULL DEFAULT 0,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS task_dependencies (
+            task_id TEXT NOT NULL,
+            depends_on_task_id TEXT NOT NULL,
+            PRIMARY KEY (task_id, depends_on_task_id),
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_dependencies_dep ON task_dependencies(depends_on_task_id);
+
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_assigned_agent ON tasks(assigned_agent);
         CREATE INDEX IF NOT EXISTS idx_task_logs_task_time ON task_logs(task_id, created_at);
@@ -117,6 +143,17 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             sqlx::query(&format!("ALTER TABLE tasks ADD COLUMN {ddl}")).execute(pool).await?;
         }
     }
+
+    // 從舊 tasks.depends_on_task_id 移轉資料到 task_dependencies
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id)
+        SELECT id, depends_on_task_id FROM tasks
+        WHERE depends_on_task_id IS NOT NULL AND depends_on_task_id != ''
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

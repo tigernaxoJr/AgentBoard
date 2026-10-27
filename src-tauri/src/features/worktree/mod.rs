@@ -151,6 +151,48 @@ pub async fn merge(pool: &Pool<Sqlite>, task: &Task) -> Result<String, String> {
     Ok(format!("已合併 {} 個 commit", commits.len()))
 }
 
+/// 取得 worktree 中指定檔案（或全部檔案）相對於 base_commit 的完整 diff 內容
+pub async fn diff(task: &Task, file_path: Option<&str>) -> Result<String, String> {
+    let (path, _, base_commit) = worktree_of(task)?;
+    if !Path::new(&path).exists() {
+        return Err("worktree 不存在".into());
+    }
+
+    let filter = file_path.filter(|p| !p.trim().is_empty());
+    let mut args = vec!["diff", &base_commit];
+    if let Some(fp) = filter {
+        args.push("--");
+        args.push(fp);
+    }
+    let mut out = git(&path, &args).await?;
+
+    // 未追蹤的新檔案不會出現在 git diff；不動 index（避免 GET 有副作用），直接列出內容
+    const MAX_UNTRACKED_BYTES: usize = 200 * 1024;
+    let mut untracked = vec!["ls-files", "--others", "--exclude-standard"];
+    if let Some(fp) = filter {
+        untracked.push("--");
+        untracked.push(fp);
+    }
+    for rel in git(&path, &untracked).await?.lines().filter(|l| !l.is_empty()) {
+        let Ok(bytes) = std::fs::read(Path::new(&path).join(rel)) else { continue };
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("--- /dev/null\n+++ b/{rel}  (新檔案)\n"));
+        let head = &bytes[..bytes.len().min(MAX_UNTRACKED_BYTES)];
+        if head.contains(&0) {
+            out.push_str("（二進位檔案，略過內容）\n");
+            continue;
+        }
+        for line in String::from_utf8_lossy(head).lines() {
+            out.push('+');
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 /// 捨棄：移除 worktree 與分支（其中的變更會一併刪除）
 pub async fn discard(pool: &Pool<Sqlite>, task: &Task) -> Result<(), String> {
     let (path, branch, _) = worktree_of(task)?;

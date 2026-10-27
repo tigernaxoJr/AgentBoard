@@ -10,6 +10,7 @@ export interface Task {
   assigned_agent: string | null;
   creator: string;
   depends_on_task_id: string | null;
+  dependency_ids?: string[];
   parent_task_id: string | null;
   last_heartbeat_at: string | null;
   attempts: number;
@@ -55,6 +56,7 @@ export interface CreateTaskPayload {
   creator: string;
   assigned_agent?: string | null;
   depends_on_task_id?: string | null;
+  dependency_ids?: string[];
 }
 
 export interface AgentDef {
@@ -78,9 +80,77 @@ export interface WorktreeStatus {
   path: string;
   base_commit: string;
   exists: boolean;
+  clean: boolean;
+  ahead: number;
+  behind: number;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
   commits: string[];
   changes: string[];
   diff_stat: string;
+}
+
+export interface TaskTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  title: string;
+  prompt: string;
+  assigned_agent: string | null;
+  model: string | null;
+  workdir: string | null;
+  auto_approve: boolean;
+  isolate: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StatsSummary {
+  total_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+  running_tasks: number;
+  queued_tasks: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_duration_ms: number;
+}
+
+export interface AgentStat {
+  agent: string;
+  task_count: number;
+  completed_count: number;
+  failed_count: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_duration_ms: number;
+}
+
+export interface WorkdirStat {
+  workdir: string;
+  task_count: number;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_duration_ms: number;
+}
+
+export interface DailyStat {
+  date: string;
+  task_count: number;
+  total_cost_usd: number;
+  total_tokens: number;
+}
+
+export interface FullStatsResponse {
+  summary: StatsSummary;
+  by_agent: AgentStat[];
+  by_workdir: WorkdirStat[];
+  by_date: DailyStat[];
 }
 
 export interface RunnerStatus {

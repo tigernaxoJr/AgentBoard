@@ -12,11 +12,14 @@ pub struct RunnerStatus {
     pub online: bool,
 }
 
+/// agent_id -> (最後出現時間, 目前任務)
+type SeenMap = HashMap<String, (DateTime<Utc>, Option<String>)>;
+
 /// 方案 B 的 Runner 在線狀態：Runner 每次領取或心跳都會經過 API，在這裡記下最後出現時間
 /// 只存在記憶體中，同一個 Agent 有多個 Runner 時合併為一筆
 #[derive(Clone)]
 pub struct Runners {
-    seen: Arc<Mutex<HashMap<String, (DateTime<Utc>, Option<String>)>>>,
+    seen: Arc<Mutex<SeenMap>>,
     /// 超過這段時間沒有出現就視為離線（與租約逾時相同）
     offline_after: chrono::Duration,
 }
