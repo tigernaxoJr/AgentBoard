@@ -1,7 +1,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
-import type { AgentDef, AgentUsageSummary, Artifact, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
+import type { AgentDef, AgentUsageSummary, Artifact, CliSession, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -103,6 +103,12 @@ export function useTasks() {
   const fetchAgents = async () => {
     const res = await api("/api/agents");
     if (res.ok) agents.value = (await res.json()) as AgentDef[];
+  };
+
+  const fetchCliSessions = async (): Promise<CliSession[]> => {
+    const res = await api("/api/cli-sessions");
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()) as CliSession[];
   };
 
   const updateAgentCli = async (agentId: string): Promise<CliUpdateResult> => {
@@ -341,6 +347,7 @@ export function useTasks() {
     selectTask,
     agents,
     updateAgentCli,
+    fetchCliSessions,
     runners,
     spawnTask,
     dispatchTask,

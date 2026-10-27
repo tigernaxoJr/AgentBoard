@@ -83,7 +83,7 @@ pub fn command_for(agent_id: &str, task: &Task) -> Option<Vec<String>> {
 
 /// 附在每個 prompt 後的提問約定：headless 模式下 Agent 的原生提問工具不可用（claude 停用、agy 不輸出內容），
 /// 改由 Agent 在結果結尾附 ask 區塊，前端解析成選項按鈕（見 src/ui.ts 的 parseAsk）
-const ASK_HINT: &str = "[Board] If you cannot continue without the user's decision, stop and end your final reply with one fenced block tagged `ask` containing JSON: {\"question\":\"...\",\"options\":[\"A\",\"B\"]}. Otherwise do not output it.";
+pub(crate) const ASK_HINT: &str = "[Board] If you cannot continue without the user's decision, stop and end your final reply with one fenced block tagged `ask` containing JSON: {\"question\":\"...\",\"options\":[\"A\",\"B\"]}. Otherwise do not output it.";
 
 /// 處理 Agent 輸出的一行：寫日誌、記錄工作階段與結果，並廣播日誌事件
 pub async fn ingest_output(

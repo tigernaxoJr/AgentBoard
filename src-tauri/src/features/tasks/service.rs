@@ -17,6 +17,8 @@ pub struct CreateTaskDto {
     pub workdir: Option<String>,
     pub auto_approve: Option<bool>,
     pub isolate: Option<bool>,
+    /// 接續既有的 CLI session（面板列出的外部 session）
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,13 +206,14 @@ impl TaskService {
         task.workdir = dto.workdir.filter(|w| !w.is_empty());
         task.auto_approve = dto.auto_approve.unwrap_or(false);
         task.isolate = dto.isolate.unwrap_or(false);
+        task.session_id = dto.session_id.filter(|s| !s.is_empty());
 
         // 任務與依賴同一個交易：依賴 ID 不存在（FK 失敗）時整筆回滾，避免產生「無依賴」的任務被直接執行
         let mut tx = pool.begin().await?;
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -224,6 +227,7 @@ impl TaskService {
         .bind(&task.workdir)
         .bind(task.auto_approve)
         .bind(task.isolate)
+        .bind(&task.session_id)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(&mut *tx)
@@ -1171,7 +1175,7 @@ mod tests {
                 "--permission-mode",
                 "acceptEdits",
                 "-p",
-                "p"
+                &format!("p\n\n{}", agents::ASK_HINT)
             ]
         );
         // 不在 Registry 裡的 Agent 也能領取，但沒有 command
@@ -1373,7 +1377,7 @@ mod tests {
         assert_eq!(cb.task.id, b.id);
         assert_eq!(
             cb.command.unwrap().last().unwrap(),
-            "根據分析：改 foo.rs\n開始實作"
+            &format!("根據分析：改 foo.rs\n開始實作\n\n{}", agents::ASK_HINT)
         );
         // 資料庫保留範本
         assert!(cb.task.prompt.contains(DEP_RESULT_PLACEHOLDER));

@@ -8,6 +8,7 @@ import ApiGuideModal from "./components/ApiGuideModal.vue";
 import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
 import StatsModal from "./components/StatsModal.vue";
 import TemplateModal from "./components/TemplateModal.vue";
+import CliSessionsModal from "./components/CliSessionsModal.vue";
 import AgentCliUpdateModal from "./components/AgentCliUpdateModal.vue";
 import Icon from "./components/Icon.vue";
 import DependencyGraph from "./components/DependencyGraph.vue";
@@ -51,6 +52,7 @@ const {
   createTemplate,
   deleteTemplate,
   fetchStats,
+  fetchCliSessions,
   updateAgentCli,
   agentUsage,
   fetchAgentUsage,
@@ -61,6 +63,7 @@ const showApiGuide = ref(false);
 const showStatsModal = ref(false);
 const showTemplateModal = ref(false);
 const showCliUpdateModal = ref(false);
+const showSessionsModal = ref(false);
 const selectedTemplateForCreate = ref<TaskTemplate | null>(null);
 const runTarget = ref<Task | null>(null);
 // 看板 / 依賴關係圖
@@ -432,6 +435,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </button>
 
         <button
+          @click="showSessionsModal = true"
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+          title="列出本機 claude 的既有 session 並接續"
+        >
+          <span>🗂️</span>
+          <span>CLI Sessions</span>
+        </button>
+
+        <button
           @click="showCliUpdateModal = true"
           class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
           title="檢查並更新 CLI (agy / claude)"
@@ -601,6 +613,13 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     <ApiGuideModal
       v-if="showApiGuide"
       @close="showApiGuide = false"
+    />
+
+    <CliSessionsModal
+      v-if="showSessionsModal"
+      :fetch-sessions="fetchCliSessions"
+      :create-task="createTask"
+      @close="showSessionsModal = false"
     />
 
     <!-- Agent CLI Update Modal -->

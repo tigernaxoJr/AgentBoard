@@ -22,6 +22,7 @@ async fn test_stats_and_templates_lifecycle() {
             workdir: Some("/test/dir".into()),
             auto_approve: Some(true),
             isolate: Some(false),
+            session_id: None,
         },
     )
     .await

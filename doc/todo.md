@@ -8,6 +8,7 @@
   目前 `failed` 是終點，重跑只能重建任務，依賴它的任務也一起卡死。
   做法：`POST /api/tasks/{id}/requeue` 把任務（以及因連鎖失敗的下游任務）改回 `queued`、`attempts` 歸零；抽屜加按鈕。
 
+- [x] **CLI Sessions 面板**：頂欄「CLI Sessions」列出本機 claude 既有 session，可輸入指示建立接續任務（`session_id` + 原 `cwd`）。限制：只支援 claude（agy 的 `.db` 為私有格式，尚未解析）；不追蹤「執行中」狀態，僅在 5 分鐘內有寫入時警告可能與原 session 同時寫入；尚未提供刪除。
 - [x] **成果圖片預覽**：抽屜成果區對 png/jpg/gif/webp 顯示縮圖、點擊放大（`GET /api/artifacts/{id}/file`，限任務目錄內）。限制：成果仍需 Agent 透過 MCP `add_artifact` 或 REST 登記，無頭模式下不會自動偵測產出檔。
 - [x] **顯示成果（artifacts）**
   後端已有 `POST/GET /api/tasks/{id}/artifacts`，UI 尚未顯示。

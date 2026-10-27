@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod artifacts;
+pub mod cli_sessions;
 pub mod execution;
 pub mod messages;
 pub mod runners;

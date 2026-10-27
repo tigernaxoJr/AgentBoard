@@ -63,6 +63,7 @@
      * `/api/templates`：任務範本 CRUD API。
      * `GET /api/tasks/{id}/worktree/diff`：隔離執行的完整 Git Diff API。
      * `POST /api/agents/{id}/update`：檢查並更新 Agent CLI（支援 `agy`、`claude`），回傳舊版本、新版本與執行日誌輸出。
+     * `GET /api/cli-sessions`：掃描 `~/.claude/projects/*/*.jsonl`（只讀檔頭 256KB）列出本機 claude 既有 session（含非看板建立的），依最後修改時間排序、最多 200 筆；無法取得 cwd 的略過。`POST /api/tasks` 的 `session_id` 欄位可直接帶入，任務執行時以 `--resume` 接續。
      * `GET /api/agents/usage`：零 Token 消耗查詢各 Agent CLI 本地用量與額度（Claude 5h/7d 限額快取、Agy 今日 Tokens 累計）。
   6. 加入背景定時檢查：
      * 自動偵測 `last_heartbeat_at` 逾時的任務，將其恢復為 `queued` 或標記 `failed`。

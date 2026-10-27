@@ -1,5 +1,6 @@
 use crate::features::agents::{self, AGENTS};
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
+use crate::features::cli_sessions;
 use crate::features::execution::{SpawnError, Spawner};
 use crate::features::messages::{MessageService, SendMessageDto};
 use crate::features::runners::Runners;
@@ -64,6 +65,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/worktree/diff", get(worktree_diff))
         .route("/api/tasks/{id}/worktree/merge", post(worktree_merge))
         .route("/api/tasks/{id}/worktree/discard", post(worktree_discard))
+        .route("/api/cli-sessions", get(list_cli_sessions))
         .route("/api/agents", get(list_agents))
         .route("/api/agents/usage", get(get_agent_usage))
         .route("/api/agents/{id}/update", post(update_agent_cli))
@@ -421,6 +423,17 @@ async fn worktree_discard(
         payload: serde_json::json!({ "id": id }),
     });
     Ok(StatusCode::OK)
+}
+
+async fn list_cli_sessions() -> impl IntoResponse {
+    let dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".claude/projects"))
+        .unwrap_or_default();
+    // 掃目錄與讀檔頭是阻塞 IO
+    let sessions = tokio::task::spawn_blocking(move || cli_sessions::list_claude_sessions(&dir))
+        .await
+        .unwrap_or_default();
+    Json(sessions)
 }
 
 async fn list_agents() -> impl IntoResponse {

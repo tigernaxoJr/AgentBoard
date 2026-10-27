@@ -59,6 +59,15 @@ export interface CreateTaskPayload {
   model?: string | null;
   auto_approve?: boolean;
   isolate?: boolean;
+  session_id?: string | null;
+}
+
+export interface CliSession {
+  agent: string;
+  session_id: string;
+  cwd: string;
+  title: string;
+  updated_at: string;
 }
 
 export interface AgentDef {

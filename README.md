@@ -93,6 +93,7 @@ python3 scripts/runner.py --agent agy --interval 3
 | `GET/POST /api/templates` | 列出 / 建立任務範本 |
 | `GET/PUT/DELETE /api/templates/{id}` | 取得 / 更新 / 刪除範本（更新時選填欄位傳空字串 = 清空） |
 | `GET /api/stats?from=YYYY-MM-DD&to=YYYY-MM-DD` | 花費、Token、耗時統計（`to` 含當天；`by_date` 為升冪） |
+| `GET /api/cli-sessions` | 列出本機 claude 既有 session（含非看板建立的）；建立任務時帶 `session_id` + `workdir` 即可接續 |
 | `GET /api/tasks/{id}/worktree/diff?path=` | worktree 相對 base commit 的完整 diff（含未追蹤新檔案，不修改 index） |
 
 建立任務時可用 `dependency_ids` 傳多個前置任務：全部完成才會解鎖，任一失敗則連鎖失敗。
