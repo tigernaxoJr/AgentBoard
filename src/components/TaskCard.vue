@@ -45,7 +45,11 @@ const copyPrompt = async () => {
     </div>
 
     <div class="flex items-center justify-between gap-2 text-[11px]">
-      <span class="font-mono text-ink-3">#{{ task.id.slice(0, 8) }}</span>
+      <span class="flex items-center gap-1.5">
+        <span class="font-mono text-ink-3">#{{ task.id.slice(0, 8) }}</span>
+        <span v-if="task.status === 'queued' && task.priority > 0" class="rounded bg-accent-soft px-1 font-medium text-accent" title="已派發，Agent 下次輪詢會優先領取">優先</span>
+        <span v-if="task.attempts > 1" class="text-amber-600 dark:text-amber-400" title="逾時重試次數">重試 {{ task.attempts - 1 }}</span>
+      </span>
       <span :class="['inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium ring-1 ring-inset', agentMeta(task.assigned_agent).chip]">
         <span :class="['h-1.5 w-1.5 rounded-full', agentMeta(task.assigned_agent).dot]"></span>
         {{ task.assigned_agent ? `@${task.assigned_agent}` : "任意" }}
@@ -80,11 +84,11 @@ const copyPrompt = async () => {
         <button
           v-if="task.status === 'queued'"
           @click="emit('play', task.assigned_agent || 'agy')"
-          title="手動觸發執行"
+          :title="`派發給 @${task.assigned_agent || 'agy'}：排到佇列最前面，Runner 下次輪詢就領取`"
           class="flex h-6 items-center gap-1 rounded-md bg-accent-soft px-2 font-medium text-accent transition-colors hover:bg-accent hover:text-accent-ink"
         >
           <Icon name="play" :size="10" />
-          執行
+          派發
         </button>
       </div>
     </footer>

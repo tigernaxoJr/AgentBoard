@@ -11,6 +11,8 @@ export interface Task {
   creator: string;
   depends_on_task_id: string | null;
   last_heartbeat_at: string | null;
+  attempts: number;
+  priority: number;
   created_at: string;
   updated_at: string;
 }

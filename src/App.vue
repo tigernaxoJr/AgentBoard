@@ -4,6 +4,7 @@ import { useTasks } from "./composables/useTasks";
 import TaskCard from "./components/TaskCard.vue";
 import CreateTaskModal from "./components/CreateTaskModal.vue";
 import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
+import ApiGuideModal from "./components/ApiGuideModal.vue";
 import Icon from "./components/Icon.vue";
 import { STATUS_META, agentMeta } from "./ui";
 import type { CreateTaskPayload, Task, TaskStatus } from "./types";
@@ -23,10 +24,11 @@ const {
   fetchTasks,
   createTask,
   selectTask,
-  claimTaskManually,
+  dispatchTask,
 } = useTasks();
 
 const showCreateModal = ref(false);
+const showApiGuide = ref(false);
 const search = ref("");
 const searchInput = ref<HTMLInputElement | null>(null);
 
@@ -66,8 +68,12 @@ const handleSelectTask = (task: Task) => {
   selectTask(task.id);
 };
 
-const handlePlay = (task: Task, agent: string) => {
-  claimTaskManually(task.id, agent);
+const handlePlay = async (task: Task, agent: string) => {
+  try {
+    await dispatchTask(task.id, agent);
+  } catch (err: any) {
+    alert("派發失敗: " + err.message);
+  }
 };
 
 // 鍵盤快捷鍵：N 新增、/ 搜尋、Esc 關閉
@@ -169,6 +175,14 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
 
         <button
+          @click="showApiGuide = true"
+          title="Agent 派工與 API 接入指南"
+          class="h-8 px-2.5 flex items-center gap-1.5 rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink text-xs font-medium transition-colors"
+        >
+          <span>📖</span>
+          <span>接入指南</span>
+        </button>
+        <button
           @click="fetchTasks"
           title="重新整理"
           class="h-8 w-8 flex items-center justify-center rounded-lg border border-line text-ink-2 hover:bg-raised hover:text-ink"
@@ -241,6 +255,12 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       v-if="showCreateModal"
       @create="handleCreateTask"
       @close="showCreateModal = false"
+    />
+
+    <!-- API & Agent Integration Guide Modal -->
+    <ApiGuideModal
+      v-if="showApiGuide"
+      @close="showApiGuide = false"
     />
   </div>
 </template>

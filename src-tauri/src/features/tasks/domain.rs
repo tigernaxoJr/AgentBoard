@@ -43,6 +43,13 @@ pub struct Task {
     pub creator: String,
     pub depends_on_task_id: Option<String>,
     pub last_heartbeat_at: Option<String>,
+    /// 每次領取產生的租約 ID，只回傳給領取者，用來驗證 heartbeat / complete / fail
+    #[serde(skip_serializing)]
+    pub lease_id: Option<String>,
+    /// 已被領取的次數（逾時重試達上限即標記 failed）
+    pub attempts: i64,
+    /// 派發優先序，數字越大越先被領取
+    pub priority: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -65,6 +72,9 @@ impl Task {
             creator,
             depends_on_task_id,
             last_heartbeat_at: None,
+            lease_id: None,
+            attempts: 0,
+            priority: 0,
             created_at: now.clone(),
             updated_at: now,
         }

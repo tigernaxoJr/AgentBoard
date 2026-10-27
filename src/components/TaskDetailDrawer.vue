@@ -75,6 +75,8 @@ const logLevelClass = (level: string) =>
         <dd class="text-ink">{{ task.creator }}</dd>
         <dt class="text-ink-3">建立時間</dt>
         <dd class="text-ink-2">{{ new Date(task.created_at).toLocaleString() }}</dd>
+        <dt class="text-ink-3">領取次數</dt>
+        <dd class="text-ink-2">{{ task.attempts }} / 3</dd>
         <dt class="text-ink-3">心跳回報</dt>
         <dd class="flex items-center gap-1.5 text-ink-2">
           <Icon v-if="task.last_heartbeat_at" name="heart" :size="12" class="text-sky-500" />

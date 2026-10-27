@@ -28,7 +28,12 @@ pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
     sqlx::query("PRAGMA foreign_keys = ON;").execute(&pool).await?;
     sqlx::query("PRAGMA busy_timeout = 5000;").execute(&pool).await?;
 
-    // Run schema migrations
+    migrate(&pool).await?;
+    Ok(pool)
+}
+
+/// 建立資料表，並為舊資料庫補上後來新增的欄位
+pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS tasks (
@@ -40,6 +45,9 @@ pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
             creator TEXT NOT NULL,
             depends_on_task_id TEXT,
             last_heartbeat_at TEXT,
+            lease_id TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            priority INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id)
@@ -81,8 +89,22 @@ pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
         CREATE INDEX IF NOT EXISTS idx_agent_messages_receiver ON agent_messages(receiver, read_status);
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await?;
 
-    Ok(pool)
+    for (column, ddl) in [
+        ("lease_id", "lease_id TEXT"),
+        ("attempts", "attempts INTEGER NOT NULL DEFAULT 0"),
+        ("priority", "priority INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?")
+            .bind(column)
+            .fetch_one(pool)
+            .await?;
+        if !exists {
+            sqlx::query(&format!("ALTER TABLE tasks ADD COLUMN {ddl}")).execute(pool).await?;
+        }
+    }
+
+    Ok(())
 }

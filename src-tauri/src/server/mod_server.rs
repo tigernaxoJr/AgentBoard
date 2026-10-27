@@ -1,6 +1,6 @@
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
 use crate::features::messages::{MessageService, SendMessageDto};
-use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, TaskService};
+use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, DispatchTaskDto, LeaseDto, TaskService};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-use tower_http::cors::CorsLayer;
+use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BoardEvent {
@@ -27,6 +27,7 @@ pub struct BoardEvent {
 pub struct ServerState {
     pub pool: Pool<Sqlite>,
     pub event_tx: broadcast::Sender<BoardEvent>,
+    pub api_token: Arc<String>,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +42,7 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/tasks/claim", post(claim_task))
+        .route("/api/tasks/{id}/dispatch", post(dispatch_task))
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
         .route("/api/tasks/{id}/fail", post(fail_task))
@@ -51,7 +53,9 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/messages", post(send_message).get(get_messages))
         // SSE Events
         .route("/api/events", get(sse_events))
-        .layer(CorsLayer::permissive())
+        // CORS 必須在驗證外層，瀏覽器的 preflight 才不會被擋
+        .route_layer(axum::middleware::from_fn_with_state(state.clone(), super::auth::require_token))
+        .layer(super::auth::cors_layer())
         .with_state(state)
 }
 
@@ -104,36 +108,58 @@ async fn claim_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if let Some(ref t) = task {
+        // 廣播不含租約 ID，只有領取者拿得到
         let _ = state.event_tx.send(BoardEvent {
             event_type: "task_claimed".to_string(),
-            payload: serde_json::to_value(t).unwrap_or_default(),
+            payload: serde_json::to_value(&t.task).unwrap_or_default(),
         });
     }
 
     Ok(Json(task))
 }
 
+async fn dispatch_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(dto): Json<DispatchTaskDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let task = TaskService::dispatch_task(&state.pool, &id, dto.agent_id.as_deref())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::CONFLICT, "Task not found or not queued".to_string()))?;
+
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "task_dispatched".to_string(),
+        payload: serde_json::to_value(&task).unwrap_or_default(),
+    });
+
+    Ok(Json(task))
+}
+
+const LEASE_MISMATCH: &str = "Task not running or lease mismatch";
+
 async fn heartbeat_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Json(dto): Json<ClaimTaskDto>,
+    Json(dto): Json<LeaseDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let success = TaskService::heartbeat(&state.pool, &id, &dto.agent_id)
+    let success = TaskService::heartbeat(&state.pool, &id, &dto.lease_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if success {
         Ok(StatusCode::OK)
     } else {
-        Err((StatusCode::BAD_REQUEST, "Task not running or agent mismatch".to_string()))
+        Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()))
     }
 }
 
 async fn complete_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
+    Json(dto): Json<LeaseDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let success = TaskService::complete_task(&state.pool, &id)
+    let success = TaskService::complete_task(&state.pool, &id, &dto.lease_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -144,15 +170,16 @@ async fn complete_task(
         });
         Ok(StatusCode::OK)
     } else {
-        Err((StatusCode::BAD_REQUEST, "Failed to complete task".to_string()))
+        Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()))
     }
 }
 
 async fn fail_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
+    Json(dto): Json<LeaseDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let success = TaskService::fail_task(&state.pool, &id)
+    let success = TaskService::fail_task(&state.pool, &id, &dto.lease_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -163,7 +190,7 @@ async fn fail_task(
         });
         Ok(StatusCode::OK)
     } else {
-        Err((StatusCode::BAD_REQUEST, "Failed to mark task as failed".to_string()))
+        Err((StatusCode::CONFLICT, LEASE_MISMATCH.to_string()))
     }
 }
 
@@ -266,17 +293,22 @@ async fn sse_events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-pub async fn start_background_workers(pool: Pool<Sqlite>, event_tx: broadcast::Sender<BoardEvent>) {
-    // 每 10 秒檢查一次是否有逾時的心跳（超過 60 秒無心跳視為逾時重置）
+pub async fn start_background_workers(
+    pool: Pool<Sqlite>,
+    event_tx: broadcast::Sender<BoardEvent>,
+    lease_timeout_secs: i64,
+) {
+    // 超過 lease_timeout_secs 無心跳視為逾時；檢查頻率為逾時的 1/3（最多 10 秒一次）
+    let check_every = (lease_timeout_secs / 3).clamp(1, 10) as u64;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(check_every));
         loop {
             interval.tick().await;
-            if let Ok(recovered) = TaskService::recover_timed_out_tasks(&pool, 60).await {
-                if recovered > 0 {
+            if let Ok(recovered) = TaskService::recover_timed_out_tasks(&pool, lease_timeout_secs).await {
+                if recovered.requeued + recovered.failed > 0 {
                     let _ = event_tx.send(BoardEvent {
                         event_type: "task_recovered".to_string(),
-                        payload: serde_json::json!({ "recovered_count": recovered }),
+                        payload: serde_json::to_value(&recovered).unwrap_or_default(),
                     });
                 }
             }
