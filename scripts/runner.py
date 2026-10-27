@@ -150,7 +150,8 @@ def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
         board.finish(task, ok=False)
         return
 
-    workdir = task.get("workdir") or None
+    # 隔離執行時 run_dir 指向伺服器建立的 git worktree
+    workdir = task.get("run_dir") or task.get("workdir") or None
     try:
         board.log(task, f"執行：{' '.join(command[:-1])}（工作目錄：{workdir or os.getcwd()}）")
         proc = subprocess.Popen(

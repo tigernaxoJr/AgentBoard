@@ -1,17 +1,24 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
-import type { Task, TaskLog } from "../types";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import type { Artifact, Task, TaskLog, WorktreeStatus } from "../types";
 import { STATUS_META, agentMeta, relativeTime } from "../ui";
 import Icon from "./Icon.vue";
+import WorktreePanel from "./WorktreePanel.vue";
 
 const props = defineProps<{
   task: Task | null;
   logs: TaskLog[];
+  artifacts: Artifact[];
+  loadWorktree: (taskId: string) => Promise<WorktreeStatus>;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "cancel"): void;
+  (e: "requeue"): void;
+  (e: "merge-worktree"): void;
+  (e: "discard-worktree"): void;
 }>();
 
 const logBox = ref<HTMLElement | null>(null);
@@ -33,6 +40,19 @@ const copyPrompt = async () => {
   setTimeout(() => (copied.value = false), 2000);
 };
 
+// 成果路徑若是相對路徑，以任務的工作目錄為基準
+const resolvePath = (path: string) =>
+  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || !props.task?.workdir ? path : `${props.task.workdir}/${path}`;
+
+// 只在檔案管理器中顯示，不直接開啟：路徑由 Agent 回報，直接開啟可能執行到腳本
+const reveal = async (path: string) => {
+  try {
+    await revealItemInDir(resolvePath(path));
+  } catch (err) {
+    alert(`無法顯示 ${path}：${err}`);
+  }
+};
+
 const logLevelClass = (level: string) =>
   ({ INFO: "text-sky-400", WARN: "text-amber-400", ERROR: "text-rose-400" })[level] ?? "text-slate-400";
 </script>
@@ -52,21 +72,30 @@ const logLevelClass = (level: string) =>
         <span class="font-mono text-xs text-ink-3 select-text">#{{ task.id.slice(0, 8) }}</span>
       </div>
       <div class="flex items-center gap-1">
-      <button
-        v-if="task.status === 'queued' || task.status === 'running'"
-        @click="emit('cancel')"
-        title="取消任務（執行中的 Agent 會被中止）"
-        class="h-7 rounded-md px-2 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
-      >
-        取消任務
-      </button>
-      <button
-        @click="emit('close')"
-        title="關閉 (Esc)"
-        class="flex h-7 w-7 items-center justify-center rounded-md text-ink-3 hover:bg-raised hover:text-ink"
-      >
-        <Icon name="x" />
-      </button>
+        <button
+          v-if="task.status === 'failed'"
+          @click="emit('requeue')"
+          title="重新排隊（領取次數歸零，連帶失敗的下游任務一併恢復）"
+          class="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-accent hover:bg-accent-soft"
+        >
+          <Icon name="refresh" :size="12" />
+          重新排隊
+        </button>
+        <button
+          v-if="task.status === 'queued' || task.status === 'running'"
+          @click="emit('cancel')"
+          title="取消任務（執行中的 Agent 會被中止）"
+          class="h-7 rounded-md px-2 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+        >
+          取消任務
+        </button>
+        <button
+          @click="emit('close')"
+          title="關閉 (Esc)"
+          class="flex h-7 w-7 items-center justify-center rounded-md text-ink-3 hover:bg-raised hover:text-ink"
+        >
+          <Icon name="x" />
+        </button>
       </div>
     </div>
 
@@ -86,7 +115,16 @@ const logLevelClass = (level: string) =>
         <dd class="font-mono text-ink-2">{{ task.model ?? "預設" }}</dd>
         <template v-if="task.workdir">
           <dt class="text-ink-3">工作目錄</dt>
-          <dd class="font-mono text-ink-2 break-all select-text">{{ task.workdir }}</dd>
+          <dd class="flex items-start gap-1.5">
+            <span class="font-mono text-ink-2 break-all select-text">{{ task.workdir }}</span>
+            <button @click="reveal(task.workdir)" title="在檔案管理器中顯示" class="shrink-0 text-ink-3 hover:text-ink">
+              <Icon name="folder" :size="12" />
+            </button>
+          </dd>
+        </template>
+        <template v-if="task.isolate">
+          <dt class="text-ink-3">隔離</dt>
+          <dd class="text-ink-2">git worktree</dd>
         </template>
         <template v-if="task.auto_approve">
           <dt class="text-ink-3">權限</dt>
@@ -124,6 +162,32 @@ const logLevelClass = (level: string) =>
           </button>
         </div>
         <div class="max-h-56 overflow-y-auto rounded-lg border border-line bg-raised/60 p-3 font-mono text-[12px] leading-relaxed text-ink whitespace-pre-wrap select-text">{{ task.prompt }}</div>
+      </section>
+
+      <WorktreePanel
+        v-if="task.branch"
+        :task="task"
+        :load="loadWorktree"
+        @merge="emit('merge-worktree')"
+        @discard="emit('discard-worktree')"
+      />
+
+      <!-- Artifacts -->
+      <section v-if="artifacts.length">
+        <h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">成果 · {{ artifacts.length }}</h4>
+        <ul class="flex flex-col gap-1.5">
+          <li v-for="a in artifacts" :key="a.id" class="group flex items-start gap-2 rounded-lg border border-line px-3 py-2">
+            <Icon name="file" :size="13" class="mt-0.5 text-ink-3" />
+            <div class="min-w-0 flex-1">
+              <div class="font-mono text-[12px] text-ink break-all select-text">{{ a.file_path }}</div>
+              <div v-if="a.summary" class="mt-0.5 text-ink-2 select-text">{{ a.summary }}</div>
+              <div class="mt-0.5 text-[11px] text-ink-3">@{{ a.agent_id }} · {{ relativeTime(a.created_at) }}</div>
+            </div>
+            <button @click="reveal(a.file_path)" title="在檔案管理器中顯示" class="shrink-0 rounded-md p-1 text-ink-3 hover:bg-raised hover:text-ink">
+              <Icon name="folder" :size="13" />
+            </button>
+          </li>
+        </ul>
       </section>
 
       <!-- Execution Logs -->

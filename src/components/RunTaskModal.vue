@@ -21,6 +21,7 @@ const agentId = ref(props.task.assigned_agent && props.agents.some((a) => a.id =
 const model = ref(props.task.model ?? "");
 const workdir = ref(props.task.workdir ?? "");
 const autoApprove = ref(props.task.auto_approve);
+const isolate = ref(props.task.isolate);
 const mode = ref<RunMode>("spawn");
 
 const agent = computed(() => props.agents.find((a) => a.id === agentId.value));
@@ -40,6 +41,7 @@ const submit = () => {
     model: model.value.trim(),
     workdir: workdir.value.trim(),
     auto_approve: autoApprove.value,
+    isolate: isolate.value && !!workdir.value.trim(),
   });
 };
 
@@ -111,6 +113,16 @@ const label = "mb-2 block text-[11px] font-semibold uppercase tracking-wider tex
           <span :class="label">工作目錄（選填）</span>
           <input v-model="workdir" placeholder="/home/you/projects/app，留空則使用 Runner 的目錄或家目錄" :class="[field, 'font-mono']" />
         </div>
+
+        <label :class="['flex items-start gap-2.5 rounded-lg border border-line px-3 py-2.5', workdir.trim() ? 'cursor-pointer' : 'opacity-50']">
+          <input v-model="isolate" type="checkbox" :disabled="!workdir.trim()" class="mt-0.5 accent-indigo-500" />
+          <span>
+            <span class="block text-xs font-semibold text-ink">在獨立的 git worktree 執行</span>
+            <span class="mt-0.5 block text-[11px] text-ink-3">
+              在 <code class="font-mono">agent-board/&lt;任務ID&gt;</code> 分支上工作，不影響你的工作目錄；完成後可在詳情中審閱並合併。需要先填工作目錄（git repo 內）。
+            </span>
+          </span>
+        </label>
 
         <label class="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line px-3 py-2.5">
           <input v-model="autoApprove" type="checkbox" class="mt-0.5 accent-rose-500" />

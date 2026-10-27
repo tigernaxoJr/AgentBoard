@@ -16,6 +16,10 @@ export interface Task {
   model: string | null;
   workdir: string | null;
   auto_approve: boolean;
+  isolate: boolean;
+  worktree_path: string | null;
+  branch: string | null;
+  base_commit: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,4 +63,15 @@ export interface RunOptions {
   model: string;
   workdir: string;
   auto_approve: boolean;
+  isolate: boolean;
+}
+
+export interface WorktreeStatus {
+  branch: string;
+  path: string;
+  base_commit: string;
+  exists: boolean;
+  commits: string[];
+  changes: string[];
+  diff_stat: string;
 }

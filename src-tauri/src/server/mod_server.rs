@@ -1,8 +1,9 @@
 use crate::features::agents::AGENTS;
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
 use crate::features::execution::{SpawnError, Spawner};
+use crate::features::worktree;
 use crate::features::messages::{MessageService, SendMessageDto};
-use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RunOptions, TaskService};
+use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -17,6 +18,7 @@ use std::net::SocketAddr;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,6 +33,8 @@ pub struct ServerState {
     pub event_tx: broadcast::Sender<BoardEvent>,
     pub api_token: Arc<String>,
     pub spawner: Spawner,
+    /// 資料庫與 worktree 所在的資料夾
+    pub data_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +52,10 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/dispatch", post(dispatch_task))
         .route("/api/tasks/{id}/spawn", post(spawn_task))
         .route("/api/tasks/{id}/cancel", post(cancel_task))
+        .route("/api/tasks/{id}/requeue", post(requeue_task))
+        .route("/api/tasks/{id}/worktree", get(worktree_status))
+        .route("/api/tasks/{id}/worktree/merge", post(worktree_merge))
+        .route("/api/tasks/{id}/worktree/discard", post(worktree_discard))
         .route("/api/agents", get(list_agents))
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
@@ -109,9 +117,23 @@ async fn claim_task(
     State(state): State<ServerState>,
     Json(dto): Json<ClaimTaskDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let task = TaskService::claim_task(&state.pool, &dto.agent_id)
+    let mut task = TaskService::claim_task(&state.pool, &dto.agent_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // 隔離執行：由伺服器建立 worktree，Runner 只需在回傳的 run_dir 執行
+    if let Some(claimed) = task.as_mut() {
+        if let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await {
+            let log = AddTaskLogDto { agent_id: dto.agent_id.clone(), level: Some("ERROR".into()), message: e };
+            let _ = TaskService::add_log(&state.pool, &claimed.task.id, log).await;
+            let _ = TaskService::fail_task(&state.pool, &claimed.task.id, &claimed.lease_id).await;
+            let _ = state.event_tx.send(BoardEvent {
+                event_type: "task_failed".to_string(),
+                payload: serde_json::json!({ "id": claimed.task.id }),
+            });
+            return Ok(Json(None));
+        }
+    }
 
     if let Some(ref t) = task {
         // 廣播不含租約 ID，只有領取者拿得到
@@ -154,6 +176,11 @@ async fn spawn_task(
             StatusCode::CONFLICT,
             "Task not queued or its dependency is not completed".to_string(),
         )),
+        Err(SpawnError::Busy) => Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many tasks running locally; dispatch to a runner or try later".to_string(),
+        )),
+        Err(SpawnError::Worktree(e)) => Err((StatusCode::BAD_REQUEST, e)),
         Err(SpawnError::Db(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -174,6 +201,78 @@ async fn cancel_task(
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_failed".to_string(),
         payload: serde_json::json!({ "id": id, "cancelled": true }),
+    });
+    Ok(StatusCode::OK)
+}
+
+async fn requeue_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let result = TaskService::requeue_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    match result {
+        RequeueResult::Requeued { downstream } => {
+            let _ = state.event_tx.send(BoardEvent {
+                event_type: "task_requeued".to_string(),
+                payload: serde_json::json!({ "id": id, "downstream": downstream }),
+            });
+            Ok(Json(serde_json::json!({ "downstream": downstream })))
+        }
+        RequeueResult::NotFailed => Err((StatusCode::CONFLICT, "Task not found or not failed".to_string())),
+        RequeueResult::DependencyFailed => Err((
+            StatusCode::CONFLICT,
+            "Its dependency has failed; requeue the dependency first".to_string(),
+        )),
+    }
+}
+
+/// 取得 worktree 操作的目標任務；執行中的任務不能合併或捨棄
+async fn finished_task(state: &ServerState, id: &str) -> Result<crate::features::tasks::Task, (StatusCode, String)> {
+    let task = TaskService::get_task(&state.pool, id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
+    if task.status == "running" {
+        return Err((StatusCode::CONFLICT, "Task is still running".to_string()));
+    }
+    Ok(task)
+}
+
+async fn worktree_status(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let task = TaskService::get_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
+    worktree::status(&task).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+}
+
+async fn worktree_merge(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let task = finished_task(&state, &id).await?;
+    let message = worktree::merge(&state.pool, &task).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "worktree_changed".to_string(),
+        payload: serde_json::json!({ "id": id }),
+    });
+    Ok(Json(serde_json::json!({ "message": message })))
+}
+
+async fn worktree_discard(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let task = finished_task(&state, &id).await?;
+    worktree::discard(&state.pool, &task).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "worktree_changed".to_string(),
+        payload: serde_json::json!({ "id": id }),
     });
     Ok(StatusCode::OK)
 }

@@ -1,6 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentDef, CreateTaskPayload, RunOptions, Task, TaskLog } from "../types";
+import type { AgentDef, Artifact, CreateTaskPayload, RunOptions, Task, TaskLog, WorktreeStatus } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -59,17 +59,27 @@ export function useTasks() {
   const fetchLogs = async (taskId: string) => {
     try {
       const res = await api(`/api/tasks/${taskId}/logs`);
-      if (res.ok) {
-        activeTaskLogs.value = (await res.json()) as TaskLog[];
-      }
+      const logs = res.ok ? ((await res.json()) as TaskLog[]) : null;
+      // 回應較慢時使用者可能已切到別的任務
+      if (logs && selectedTaskId.value === taskId) activeTaskLogs.value = logs;
     } catch (e) {
       console.error("Failed to fetch logs", e);
     }
   };
 
+  const activeTaskArtifacts = ref<Artifact[]>([]);
+  const fetchArtifacts = async (taskId: string) => {
+    const res = await api(`/api/tasks/${taskId}/artifacts`);
+    const artifacts = res.ok ? ((await res.json()) as Artifact[]) : null;
+    if (artifacts && selectedTaskId.value === taskId) activeTaskArtifacts.value = artifacts;
+  };
+
   const selectTask = (taskId: string) => {
     selectedTaskId.value = taskId;
+    activeTaskLogs.value = [];
+    activeTaskArtifacts.value = [];
     fetchLogs(taskId);
+    fetchArtifacts(taskId);
   };
 
   const agents = ref<AgentDef[]>([]);
@@ -90,6 +100,22 @@ export function useTasks() {
   const dispatchTask = (taskId: string, opts: RunOptions) => postTaskAction(taskId, "dispatch", opts);
   // 排隊中或執行中都能取消；Runner 執行的任務會在下次心跳時中止
   const cancelTask = (taskId: string) => postTaskAction(taskId, "cancel");
+  // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）
+  const requeueTask = (taskId: string) => postTaskAction(taskId, "requeue");
+
+  // 隔離執行的 worktree：查看狀態、合併回 repo、捨棄
+  const fetchWorktree = async (taskId: string) => {
+    const res = await api(`/api/tasks/${taskId}/worktree`);
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()) as WorktreeStatus;
+  };
+  const mergeWorktree = async (taskId: string) => {
+    const res = await api(`/api/tasks/${taskId}/worktree/merge`, { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    fetchTasks();
+    return ((await res.json()) as { message: string }).message;
+  };
+  const discardWorktree = (taskId: string) => postTaskAction(taskId, "worktree/discard");
 
   // 即時監聽後端 SSE 事件
   const initSSE = async () => {
@@ -97,12 +123,16 @@ export function useTasks() {
       const { base_url, token } = await apiConfig;
       eventSource = new EventSource(`${base_url}/api/events?token=${token}`);
 
-      const handleUpdate = () => {
+      // 狀態變更只重抓任務列表；日誌由 log_added 事件逐則附加，不再整份重抓
+      const handleUpdate = () => fetchTasks();
+      // 斷線重連期間可能漏掉事件，連上時整份同步一次
+      eventSource.addEventListener("open", () => {
         fetchTasks();
         if (selectedTaskId.value) {
           fetchLogs(selectedTaskId.value);
+          fetchArtifacts(selectedTaskId.value);
         }
-      };
+      });
 
       eventSource.addEventListener("task_created", handleUpdate);
       eventSource.addEventListener("task_claimed", handleUpdate);
@@ -110,10 +140,17 @@ export function useTasks() {
       eventSource.addEventListener("task_completed", handleUpdate);
       eventSource.addEventListener("task_failed", handleUpdate);
       eventSource.addEventListener("task_recovered", handleUpdate);
-      eventSource.addEventListener("log_added", () => {
-        if (selectedTaskId.value) {
-          fetchLogs(selectedTaskId.value);
-        }
+      eventSource.addEventListener("task_requeued", handleUpdate);
+      eventSource.addEventListener("worktree_changed", handleUpdate);
+      eventSource.addEventListener("artifact_created", (e) => {
+        const artifact = JSON.parse((e as MessageEvent).data).payload as Artifact;
+        if (artifact.task_id === selectedTaskId.value) activeTaskArtifacts.value.unshift(artifact);
+      });
+      eventSource.addEventListener("log_added", (e) => {
+        const log = JSON.parse((e as MessageEvent).data).payload as TaskLog;
+        // 只處理目前開著的任務；fetchLogs 與事件可能重疊，以 id 去重
+        if (log.task_id !== selectedTaskId.value) return;
+        if (!activeTaskLogs.value.some((l) => l.id === log.id)) activeTaskLogs.value.push(log);
       });
     } catch (e) {
       console.warn("SSE could not connect, will rely on polling fallback", e);
@@ -167,5 +204,10 @@ export function useTasks() {
     spawnTask,
     dispatchTask,
     cancelTask,
+    requeueTask,
+    activeTaskArtifacts,
+    fetchWorktree,
+    mergeWorktree,
+    discardWorktree,
   };
 }

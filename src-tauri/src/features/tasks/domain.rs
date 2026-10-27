@@ -1,38 +1,8 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-}
-
-impl TaskStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TaskStatus::Queued => "queued",
-            TaskStatus::Running => "running",
-            TaskStatus::Completed => "completed",
-            TaskStatus::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "queued" => Some(TaskStatus::Queued),
-            "running" => Some(TaskStatus::Running),
-            "completed" => Some(TaskStatus::Completed),
-            "failed" => Some(TaskStatus::Failed),
-            _ => None,
-        }
-    }
-}
-
-/// 輕量領域模型：TaskAggregate
-/// 管理任務的狀態轉移規則與租約（Lease / Heartbeat）邏輯
+/// 任務資料列。狀態轉移與租約規則以原子 SQL 實作於 service.rs，
+/// 避免「先讀再判斷再寫」在多個 Agent 並發時出現競態
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Task {
     pub id: String,
@@ -56,6 +26,12 @@ pub struct Task {
     pub workdir: Option<String>,
     /// true = 完整權限（略過所有權限詢問）
     pub auto_approve: bool,
+    /// true = 在獨立的 git worktree 中執行（workdir 必須在 git repo 內）
+    pub isolate: bool,
+    /// 隔離執行時建立的 worktree、分支與分支起點
+    pub worktree_path: Option<String>,
+    pub branch: Option<String>,
+    pub base_commit: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -73,7 +49,7 @@ impl Task {
             id: uuid::Uuid::new_v4().to_string(),
             title,
             prompt,
-            status: TaskStatus::Queued.as_str().to_string(),
+            status: "queued".to_string(),
             assigned_agent,
             creator,
             depends_on_task_id,
@@ -84,38 +60,12 @@ impl Task {
             model: None,
             workdir: None,
             auto_approve: false,
+            isolate: false,
+            worktree_path: None,
+            branch: None,
+            base_commit: None,
             created_at: now.clone(),
             updated_at: now,
         }
-    }
-
-    /// 領取任務規則檢查
-    pub fn can_claim(&self, agent_id: &str) -> bool {
-        if self.status != TaskStatus::Queued.as_str() {
-            return false;
-        }
-        match &self.assigned_agent {
-            Some(assigned) => assigned == agent_id,
-            None => true,
-        }
-    }
-
-    /// 判斷心跳是否逾時（秒數）
-    pub fn is_heartbeat_expired(&self, timeout_seconds: i64) -> bool {
-        if self.status != TaskStatus::Running.as_str() {
-            return false;
-        }
-        if let Some(ref hb_str) = self.last_heartbeat_at {
-            if let Ok(hb_time) = chrono::DateTime::parse_from_rfc3339(hb_str) {
-                let diff = Utc::now().signed_duration_since(hb_time.with_timezone(&Utc));
-                return diff.num_seconds() > timeout_seconds;
-            }
-        }
-        // 若處於 running 狀態卻從未回報過心跳，且距離 updated_at 超過超時時間也視為逾時
-        if let Ok(up_time) = chrono::DateTime::parse_from_rfc3339(&self.updated_at) {
-            let diff = Utc::now().signed_duration_since(up_time.with_timezone(&Utc));
-            return diff.num_seconds() > timeout_seconds;
-        }
-        false
     }
 }

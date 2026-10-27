@@ -29,6 +29,11 @@ const {
   spawnTask,
   dispatchTask,
   cancelTask,
+  requeueTask,
+  activeTaskArtifacts,
+  fetchWorktree,
+  mergeWorktree,
+  discardWorktree,
 } = useTasks();
 
 const showCreateModal = ref(false);
@@ -83,6 +88,36 @@ const handleRun = async (mode: RunMode, opts: RunOptions) => {
     if (mode === "spawn") selectTask(task.id);
   } catch (err: any) {
     alert((mode === "spawn" ? "執行失敗: " : "派發失敗: ") + err.message);
+  }
+};
+
+const handleRequeue = async () => {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    await requeueTask(task.id);
+  } catch (err: any) {
+    alert("重新排隊失敗: " + err.message);
+  }
+};
+
+const handleMergeWorktree = async () => {
+  const task = selectedTask.value;
+  if (!task || !confirm(`把「${task.title}」的分支 ${task.branch} 合併回 repo 目前的分支？\n未 commit 的變更會先自動 commit；合併成功後移除 worktree 與分支。`)) return;
+  try {
+    alert(await mergeWorktree(task.id));
+  } catch (err: any) {
+    alert("合併失敗（repo 未被修改）：\n" + err.message);
+  }
+};
+
+const handleDiscardWorktree = async () => {
+  const task = selectedTask.value;
+  if (!task || !confirm(`捨棄分支 ${task.branch} 與其 worktree？其中的變更會被刪除，無法復原。`)) return;
+  try {
+    await discardWorktree(task.id);
+  } catch (err: any) {
+    alert("捨棄失敗: " + err.message);
   }
 };
 
@@ -267,7 +302,12 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           :task="selectedTask"
           :logs="activeTaskLogs"
           @close="selectedTaskId = null"
+          :artifacts="activeTaskArtifacts"
+          :load-worktree="fetchWorktree"
+          @merge-worktree="handleMergeWorktree"
+          @discard-worktree="handleDiscardWorktree"
           @cancel="handleCancel"
+          @requeue="handleRequeue"
         />
       </div>
     </div>

@@ -1,32 +1,22 @@
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
-use std::fs;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::{Pool, Sqlite};
 use std::path::Path;
+use std::time::Duration;
 
 pub async fn init_db(db_path: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
-    if let Some(parent) = Path::new(db_path).parent() {
-        if !parent.exists() {
-            let _ = fs::create_dir_all(parent);
-        }
+    if let Some(parent) = Path::new(db_path).parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
     }
 
-    let connection_url = if db_path == ":memory:" {
-        "sqlite::memory:".to_string()
-    } else {
-        if !Path::new(db_path).exists() {
-            let _ = fs::File::create(db_path);
-        }
-        format!("sqlite://{}", db_path)
-    };
+    // PRAGMA 是每條連線各自的設定，放在連線選項裡才會套用到連線池的每一條連線
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
 
-    let pool = SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect(&connection_url)
-        .await?;
-
-    // Enable WAL mode & foreign keys
-    sqlx::query("PRAGMA journal_mode = WAL;").execute(&pool).await?;
-    sqlx::query("PRAGMA foreign_keys = ON;").execute(&pool).await?;
-    sqlx::query("PRAGMA busy_timeout = 5000;").execute(&pool).await?;
+    let pool = SqlitePoolOptions::new().max_connections(10).connect_with(options).await?;
 
     migrate(&pool).await?;
     Ok(pool)
@@ -51,6 +41,10 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             model TEXT,
             workdir TEXT,
             auto_approve INTEGER NOT NULL DEFAULT 0,
+            isolate INTEGER NOT NULL DEFAULT 0,
+            worktree_path TEXT,
+            branch TEXT,
+            base_commit TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id)
@@ -102,6 +96,10 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("model", "model TEXT"),
         ("workdir", "workdir TEXT"),
         ("auto_approve", "auto_approve INTEGER NOT NULL DEFAULT 0"),
+        ("isolate", "isolate INTEGER NOT NULL DEFAULT 0"),
+        ("worktree_path", "worktree_path TEXT"),
+        ("branch", "branch TEXT"),
+        ("base_commit", "base_commit TEXT"),
     ] {
         let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?")
             .bind(column)

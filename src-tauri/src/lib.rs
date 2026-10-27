@@ -36,12 +36,17 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
 
     // 方案 A 的子程序心跳頻率與 Runner 一致：逾時時間的 1/3
     let heartbeat_every = std::time::Duration::from_secs((lease_timeout_secs / 3).max(1) as u64);
-    let spawner = features::execution::Spawner::new(pool.clone(), event_tx.clone(), heartbeat_every);
+    // 方案 A 同時執行的子程序上限，超過時請改派發給 Runner
+    let max_parallel = env_or("AGENT_BOARD_MAX_PARALLEL", 4usize);
+    // worktree 等資料與資料庫放在同一個資料夾
+    let data_dir = std::path::Path::new(db_path).parent().map_or_else(|| ".".into(), |p| p.to_path_buf());
+    let spawner = features::execution::Spawner::new(pool.clone(), event_tx.clone(), heartbeat_every, max_parallel, data_dir.clone());
     let server_state = ServerState {
         pool,
         event_tx,
         api_token: Arc::new(api_token),
         spawner,
+        data_dir,
     };
 
     println!("[*] Agent Board API Server running on http://127.0.0.1:{}", port);
@@ -56,10 +61,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![get_api_config])
         .setup(|app| {
-            // token 存在 App 資料夾（Linux: ~/.local/share/com.naxo.agent-board/api_token），Runner 從這裡讀
-            let token_path = app.path().app_data_dir()?.join("api_token");
+            // token 與資料庫都存在 App 資料夾（Linux: ~/.local/share/com.naxo.agent-board/），Runner 從這裡讀 token
+            let data_dir = app.path().app_data_dir()?;
+            let token_path = data_dir.join("api_token");
+            let db_path = data_dir.join("agent_board.db").to_string_lossy().into_owned();
             let token = server::auth::load_or_create_token(&token_path)?;
             println!("[*] API token file: {}", token_path.display());
+            println!("[*] Database: {db_path}");
 
             let port = env_or("PORT", 18833u16);
             let lease_timeout = env_or("LEASE_TIMEOUT_SECS", 60i64);
@@ -70,7 +78,7 @@ pub fn run() {
 
             // 初始化 SQLite 資料庫與後端服務（預設埠號 18833）
             tauri::async_runtime::spawn(async move {
-                serve("agent_board.db", token, port, lease_timeout).await;
+                serve(&db_path, token, port, lease_timeout).await;
             });
 
             Ok(())

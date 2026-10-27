@@ -76,8 +76,8 @@ mod tests {
         let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
         crate::db::migrate(&pool).await.unwrap();
         let (event_tx, _) = tokio::sync::broadcast::channel(10);
-        let spawner = crate::features::execution::Spawner::new(pool.clone(), event_tx.clone(), std::time::Duration::from_secs(1));
-        create_router(ServerState { pool, event_tx, api_token: Arc::new(TOKEN.into()), spawner })
+        let spawner = crate::features::execution::Spawner::new(pool.clone(), event_tx.clone(), std::time::Duration::from_secs(1), 4, std::env::temp_dir());
+        create_router(ServerState { pool, event_tx, api_token: Arc::new(TOKEN.into()), spawner, data_dir: std::env::temp_dir() })
     }
 
     async fn send(req: axum::http::request::Builder) -> Response {

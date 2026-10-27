@@ -1,14 +1,17 @@
 use crate::features::agents::AGENTS;
 use crate::features::tasks::{AddTaskLogDto, ClaimedTask, RunOptions, Task, TaskService};
+use crate::features::worktree;
 use crate::server::BoardEvent;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, Semaphore};
 use tokio::task::JoinHandle;
 
 #[derive(Debug)]
@@ -16,6 +19,10 @@ pub enum SpawnError {
     UnsupportedAgent,
     /// 任務不在佇列中，或前置任務尚未完成
     NotClaimable,
+    /// 已達同時執行上限
+    Busy,
+    /// 隔離執行時無法建立 worktree（任務已標記失敗）
+    Worktree(String),
     Db(sqlx::Error),
 }
 
@@ -39,11 +46,30 @@ pub struct Spawner {
     event_tx: broadcast::Sender<BoardEvent>,
     heartbeat_every: Duration,
     running: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    slots: Arc<Semaphore>,
+    /// 子程序使用的 PATH（補上 CLI 常見的安裝位置）
+    path: OsString,
+    /// 隔離執行時 worktree 的存放位置（App 資料夾）
+    data_dir: PathBuf,
 }
 
 impl Spawner {
-    pub fn new(pool: Pool<Sqlite>, event_tx: broadcast::Sender<BoardEvent>, heartbeat_every: Duration) -> Self {
-        Self { pool, event_tx, heartbeat_every, running: Arc::default() }
+    pub fn new(
+        pool: Pool<Sqlite>,
+        event_tx: broadcast::Sender<BoardEvent>,
+        heartbeat_every: Duration,
+        max_parallel: usize,
+        data_dir: PathBuf,
+    ) -> Self {
+        Self {
+            pool,
+            event_tx,
+            heartbeat_every,
+            running: Arc::default(),
+            slots: Arc::new(Semaphore::new(max_parallel)),
+            path: agent_path(),
+            data_dir,
+        }
     }
 
     /// 寫入執行設定、領取指定任務並啟動子程序
@@ -52,14 +78,25 @@ impl Spawner {
         if !AGENTS.iter().any(|a| a.id == agent_id) {
             return Err(SpawnError::UnsupportedAgent);
         }
-        let claimed = TaskService::claim_specific(&self.pool, task_id, &agent_id, &opts)
+        // 先佔名額再領取，額滿時任務維持在佇列中
+        let slot = self.slots.clone().try_acquire_owned().map_err(|_| SpawnError::Busy)?;
+        let mut claimed = TaskService::claim_specific(&self.pool, task_id, &agent_id, &opts)
             .await?
             .ok_or(SpawnError::NotClaimable)?;
+        if let Err(e) = worktree::prepare(&self.pool, &mut claimed, &self.data_dir).await {
+            self.log(task_id, &agent_id, "ERROR", e.clone()).await;
+            self.finish(task_id, &claimed.lease_id, false).await;
+            return Err(SpawnError::Worktree(e));
+        }
         let argv = claimed.command.clone().ok_or(SpawnError::UnsupportedAgent)?;
 
         self.emit("task_claimed", serde_json::to_value(&claimed.task).unwrap_or_default());
         let task = claimed.task.clone();
-        self.start(claimed, argv);
+        let handle = self.start(claimed, argv);
+        tokio::spawn(async move {
+            let _ = handle.await;
+            drop(slot);
+        });
         Ok(task)
     }
 
@@ -89,8 +126,7 @@ impl Spawner {
         let lease_id = claimed.lease_id.as_str();
         let agent = claimed.task.assigned_agent.clone().unwrap_or_default();
         let workdir = claimed
-            .task
-            .workdir
+            .run_dir
             .clone()
             .or_else(|| std::env::var("AGENT_BOARD_WORKDIR").ok())
             .or_else(|| std::env::var("HOME").ok());
@@ -105,6 +141,7 @@ impl Spawner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("PATH", &self.path)
             .kill_on_drop(true);
         if let Some(dir) = &workdir {
             cmd.current_dir(dir);
@@ -208,6 +245,25 @@ impl Spawner {
     }
 }
 
+/// 從桌面捷徑啟動時 PATH 常常不含 ~/.local/bin 等目錄，導致找不到 agy / claude
+/// 在既有 PATH 後面補上 CLI 常見的安裝位置（已存在的不重複加入）
+fn agent_path() -> OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let extras = [
+        home.as_ref().map(|h| h.join(".local/bin")),
+        home.as_ref().map(|h| h.join(".cargo/bin")),
+        Some("/usr/local/bin".into()),
+        Some("/opt/homebrew/bin".into()),
+    ];
+    for dir in extras.into_iter().flatten() {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
 async fn kill_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
@@ -227,7 +283,7 @@ mod tests {
         let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
         crate::db::migrate(&pool).await.unwrap();
         let (event_tx, _) = broadcast::channel(100);
-        (Spawner::new(pool.clone(), event_tx, Duration::from_millis(heartbeat_ms)), pool)
+        (Spawner::new(pool.clone(), event_tx, Duration::from_millis(heartbeat_ms), 1, std::env::temp_dir()), pool)
     }
 
     async fn claim(pool: &Pool<Sqlite>, workdir: Option<&str>) -> ClaimedTask {
@@ -318,6 +374,57 @@ mod tests {
         TaskService::cancel_task(&pool, &id).await.unwrap();
         within(handle).await;
         assert!(status_and_logs(&pool, &id).await.1.iter().any(|l| l.contains("已中止")));
+    }
+
+    #[tokio::test]
+    async fn binaries_are_resolved_through_the_augmented_path() {
+        let (mut spawner, pool) = setup(1000).await;
+        let dir = std::env::temp_dir().join(format!("agent_board_bin_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("fake-agent");
+        std::fs::write(&bin, "#!/bin/sh\necho found-me\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // fake-agent 不在測試程序自己的 PATH 裡，只在 Spawner 的 PATH 裡
+        let mut dirs = vec![dir.clone()];
+        dirs.extend(std::env::split_paths(&spawner.path));
+        spawner.path = std::env::join_paths(dirs).unwrap();
+
+        let claimed = claim(&pool, None).await;
+        let id = claimed.task.id.clone();
+        within(spawner.start(claimed, vec!["fake-agent".into(), "prompt".into()])).await;
+        let (status, logs) = status_and_logs(&pool, &id).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(status, "completed", "{logs:?}");
+        assert!(logs.iter().any(|l| l == "found-me"));
+    }
+
+    #[test]
+    fn agent_path_adds_common_cli_dirs_once() {
+        let path = agent_path();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let local_bin = PathBuf::from(std::env::var("HOME").unwrap()).join(".local/bin");
+        let before = std::env::var_os("PATH").map_or(0, |p| std::env::split_paths(&p).filter(|d| *d == local_bin).count());
+        // 原本沒有就補一個，原本有就不再加
+        assert_eq!(dirs.iter().filter(|d| **d == local_bin).count(), before.max(1));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+    }
+
+    #[tokio::test]
+    async fn spawn_is_rejected_when_all_slots_are_busy() {
+        let (spawner, pool) = setup(1000).await;
+        // 佔掉唯一的名額
+        let _held = spawner.slots.clone().try_acquire_owned().unwrap();
+        let task = TaskService::create_task(&pool, CreateTaskDto { title: "t".into(), prompt: "p".into(), ..Default::default() })
+            .await
+            .unwrap();
+        let opts = RunOptions { agent_id: Some("agy".into()), ..Default::default() };
+        assert!(matches!(spawner.spawn(&task.id, opts).await, Err(SpawnError::Busy)));
+        // 額滿時不能把任務領走
+        assert_eq!(TaskService::get_task(&pool, &task.id).await.unwrap().unwrap().status, "queued");
     }
 
     #[tokio::test]

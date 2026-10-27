@@ -12,6 +12,9 @@ const paths = {
   terminal: "M4 6l6 6-6 6M12 18h8",
   layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5",
   heart: "M3 12h4l2-5 4 10 2-5h6",
+  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5",
+  branch: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
 };
 
 defineProps<{ name: keyof typeof paths; size?: number }>();

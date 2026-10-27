@@ -14,6 +14,7 @@ pub struct CreateTaskDto {
     pub model: Option<String>,
     pub workdir: Option<String>,
     pub auto_approve: Option<bool>,
+    pub isolate: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +35,7 @@ pub struct RunOptions {
     pub model: Option<String>,
     pub workdir: Option<String>,
     pub auto_approve: Option<bool>,
+    pub isolate: Option<bool>,
 }
 
 /// 領取成功時回傳的任務，附帶僅領取者知道的租約 ID，以及要執行的 argv
@@ -44,13 +46,25 @@ pub struct ClaimedTask {
     pub lease_id: String,
     /// 由 Agent Registry 組出；不支援的 Agent 為 None
     pub command: Option<Vec<String>>,
+    /// 實際執行目錄：隔離執行時為 worktree 內對應的目錄，否則等於 workdir
+    pub run_dir: Option<String>,
 }
 
 impl ClaimedTask {
     fn new(task: Task, lease_id: String) -> Self {
         let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &task));
-        Self { task, lease_id, command }
+        let run_dir = task.workdir.clone();
+        Self { task, lease_id, command, run_dir }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RequeueResult {
+    Requeued { downstream: u64 },
+    /// 任務不存在或不是 failed
+    NotFailed,
+    /// 前置任務也是 failed，重新排隊也永遠領不到
+    DependencyFailed,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -61,6 +75,9 @@ pub struct RecoveryResult {
 
 /// 任務最多被領取幾次，逾時重試超過即視為失敗
 pub const MAX_ATTEMPTS: i64 = 3;
+
+/// 看板列表最多顯示幾筆已結束的任務
+pub const FINISHED_LIST_LIMIT: i64 = 200;
 
 #[derive(Debug, Deserialize)]
 pub struct AddTaskLogDto {
@@ -94,11 +111,12 @@ impl TaskService {
         task.model = dto.model.filter(|m| !m.is_empty());
         task.workdir = dto.workdir.filter(|w| !w.is_empty());
         task.auto_approve = dto.auto_approve.unwrap_or(false);
+        task.isolate = dto.isolate.unwrap_or(false);
 
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, model, workdir, auto_approve, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, model, workdir, auto_approve, isolate, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -112,6 +130,7 @@ impl TaskService {
         .bind(&task.model)
         .bind(&task.workdir)
         .bind(task.auto_approve)
+        .bind(task.isolate)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(pool)
@@ -120,11 +139,20 @@ impl TaskService {
         Ok(task)
     }
 
-    /// 列出所有任務
+    /// 列出任務：排隊中 / 執行中全部回傳，已結束的只回傳最近 FINISHED_LIST_LIMIT 筆
     pub async fn list_tasks(pool: &Pool<Sqlite>) -> Result<Vec<Task>, sqlx::Error> {
         let tasks = sqlx::query_as::<_, Task>(
-            "SELECT * FROM tasks ORDER BY created_at DESC"
+            r#"
+            SELECT * FROM tasks
+            WHERE status IN ('queued', 'running')
+               OR id IN (
+                 SELECT id FROM tasks WHERE status IN ('completed', 'failed')
+                 ORDER BY updated_at DESC LIMIT ?
+               )
+            ORDER BY created_at DESC
+            "#,
         )
+        .bind(FINISHED_LIST_LIMIT)
         .fetch_all(pool)
         .await?;
         Ok(tasks)
@@ -200,7 +228,8 @@ impl TaskService {
                 attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3,
                 model = NULLIF(COALESCE(?4, model), ''),
                 workdir = NULLIF(COALESCE(?5, workdir), ''),
-                auto_approve = COALESCE(?6, auto_approve)
+                auto_approve = COALESCE(?6, auto_approve),
+                isolate = COALESCE(?8, isolate)
             WHERE id = ?7 AND status = 'queued'
               AND (
                 depends_on_task_id IS NULL
@@ -216,6 +245,7 @@ impl TaskService {
         .bind(&opts.workdir)
         .bind(opts.auto_approve)
         .bind(task_id)
+        .bind(opts.isolate)
         .fetch_optional(pool)
         .await?;
 
@@ -237,6 +267,7 @@ impl TaskService {
                 model = NULLIF(COALESCE(?, model), ''),
                 workdir = NULLIF(COALESCE(?, workdir), ''),
                 auto_approve = COALESCE(?, auto_approve),
+                isolate = COALESCE(?, isolate),
                 updated_at = ?
             WHERE id = ? AND status = 'queued'
             RETURNING *
@@ -246,10 +277,28 @@ impl TaskService {
         .bind(&opts.model)
         .bind(&opts.workdir)
         .bind(opts.auto_approve)
+        .bind(opts.isolate)
         .bind(&now)
         .bind(task_id)
         .fetch_optional(pool)
         .await
+    }
+
+    /// 記錄（或清除）隔離執行用的 worktree 資訊：(路徑, 分支, 起點 commit)
+    pub async fn set_worktree(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        worktree: Option<(&str, &str, &str)>,
+    ) -> Result<(), sqlx::Error> {
+        let (path, branch, base) = worktree.map_or((None, None, None), |(p, b, c)| (Some(p), Some(b), Some(c)));
+        sqlx::query("UPDATE tasks SET worktree_path = ?, branch = ?, base_commit = ? WHERE id = ?")
+            .bind(path)
+            .bind(branch)
+            .bind(base)
+            .bind(task_id)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     /// 取消：排隊中或執行中的任務直接標記失敗並作廢租約
@@ -325,6 +374,58 @@ impl TaskService {
             Self::cascade_dependency_failures(pool).await?;
         }
         Ok(rows > 0)
+    }
+
+    /// 重新排隊失敗的任務：attempts 歸零，並一併恢復因它連鎖失敗的下游任務
+    /// （attempts = 0 代表從未被領取，只是被連帶標記失敗）
+    pub async fn requeue_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<RequeueResult, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = pool.begin().await?;
+
+        let dependency_failed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tasks t JOIN tasks dep ON dep.id = t.depends_on_task_id WHERE t.id = ? AND dep.status = 'failed')",
+        )
+        .bind(task_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if dependency_failed {
+            return Ok(RequeueResult::DependencyFailed);
+        }
+
+        let rows = sqlx::query(
+            r#"
+            UPDATE tasks SET status = 'queued', attempts = 0, lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'failed'
+            "#,
+        )
+        .bind(&now)
+        .bind(task_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if rows == 0 {
+            return Ok(RequeueResult::NotFailed);
+        }
+
+        let downstream = sqlx::query(
+            r#"
+            WITH RECURSIVE downstream(id) AS (
+                SELECT id FROM tasks WHERE depends_on_task_id = ?1 AND status = 'failed' AND attempts = 0
+                UNION
+                SELECT t.id FROM tasks t JOIN downstream d ON t.depends_on_task_id = d.id
+                WHERE t.status = 'failed' AND t.attempts = 0
+            )
+            UPDATE tasks SET status = 'queued', updated_at = ?2 WHERE id IN (SELECT id FROM downstream)
+            "#,
+        )
+        .bind(task_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        tx.commit().await?;
+        Ok(RequeueResult::Requeued { downstream })
     }
 
     /// 逾時檢查與重置（Background Worker 呼叫）
@@ -640,6 +741,61 @@ mod tests {
         assert_eq!(status(&pool, &b.id).await, "failed");
         // 已結束的任務不能再取消
         assert!(!TaskService::cancel_task(&pool, &a.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn requeue_restores_task_and_cascaded_dependents() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let c = new_task(&pool, "c", Some(&b.id)).await;
+        for _ in 0..MAX_ATTEMPTS {
+            TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            expire_all(&pool).await;
+        }
+        assert_eq!(status(&pool, &c.id).await, "failed");
+
+        // 下游任務的前置任務仍是 failed，不能單獨重排
+        assert_eq!(TaskService::requeue_task(&pool, &b.id).await.unwrap(), RequeueResult::DependencyFailed);
+        assert_eq!(TaskService::requeue_task(&pool, &a.id).await.unwrap(), RequeueResult::Requeued { downstream: 2 });
+        for id in [&a.id, &b.id, &c.id] {
+            assert_eq!(status(&pool, id).await, "queued");
+        }
+        // attempts 歸零，可以再被領取 MAX_ATTEMPTS 次
+        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        assert_eq!((claimed.task.id.as_str(), claimed.task.attempts), (a.id.as_str(), 1));
+        assert_eq!(TaskService::requeue_task(&pool, &a.id).await.unwrap(), RequeueResult::NotFailed);
+    }
+
+    #[tokio::test]
+    async fn requeue_task_whose_dependency_completed() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        // a 完成、b 自己執行失敗：重排 b 只恢復 b 本身
+        let ca = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        TaskService::complete_task(&pool, &a.id, &ca.lease_id).await.unwrap();
+        let cb = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        TaskService::fail_task(&pool, &b.id, &cb.lease_id).await.unwrap();
+        assert_eq!(TaskService::requeue_task(&pool, &b.id).await.unwrap(), RequeueResult::Requeued { downstream: 0 });
+        assert_eq!(status(&pool, &b.id).await, "queued");
+    }
+
+    #[tokio::test]
+    async fn list_keeps_all_active_tasks_but_caps_finished_ones() {
+        let pool = memory_pool().await;
+        let total = FINISHED_LIST_LIMIT + 5;
+        for i in 0..total {
+            let t = new_task(&pool, &format!("done{i}"), None).await;
+            TaskService::cancel_task(&pool, &t.id).await.unwrap();
+        }
+        let queued = new_task(&pool, "queued", None).await;
+
+        let listed = TaskService::list_tasks(&pool).await.unwrap();
+        assert_eq!(listed.len() as i64, FINISHED_LIST_LIMIT + 1);
+        assert!(listed.iter().any(|t| t.id == queued.id));
+        // 最早結束的幾筆被排除
+        assert!(!listed.iter().any(|t| t.title == "done0"));
     }
 
     #[tokio::test]
