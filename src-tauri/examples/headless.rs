@@ -12,7 +12,7 @@ async fn main() {
     let token = load_or_create_token(std::path::Path::new(&token_path)).expect("Failed to load token");
     println!("[*] API token file: {}", token_path);
 
-    let port = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
+    let port = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(18833);
     let lease_timeout = std::env::var("LEASE_TIMEOUT_SECS").ok().and_then(|p| p.parse().ok()).unwrap_or(60);
     serve(&db_path, token, port, lease_timeout).await;
 }

@@ -50,6 +50,12 @@ pub struct Task {
     pub attempts: i64,
     /// 派發優先序，數字越大越先被領取
     pub priority: i64,
+    /// 指定模型，None 代表 Agent 預設
+    pub model: Option<String>,
+    /// 執行時的工作目錄
+    pub workdir: Option<String>,
+    /// true = 完整權限（略過所有權限詢問）
+    pub auto_approve: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -75,6 +81,9 @@ impl Task {
             lease_id: None,
             attempts: 0,
             priority: 0,
+            model: None,
+            workdir: None,
+            auto_approve: false,
             created_at: now.clone(),
             updated_at: now,
         }

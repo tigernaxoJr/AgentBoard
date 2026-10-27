@@ -11,7 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "select", task: Task): void;
-  (e: "play", agent: string): void;
+  (e: "run"): void;
 }>();
 
 const copied = ref(false);
@@ -83,12 +83,12 @@ const copyPrompt = async () => {
         </button>
         <button
           v-if="task.status === 'queued'"
-          @click="emit('play', task.assigned_agent || 'agy')"
-          :title="`派發給 @${task.assigned_agent || 'agy'}：排到佇列最前面，Runner 下次輪詢就領取`"
+          @click="emit('run')"
+          title="選擇 Agent 與模型後立即執行，或派發給 Runner"
           class="flex h-6 items-center gap-1 rounded-md bg-accent-soft px-2 font-medium text-accent transition-colors hover:bg-accent hover:text-accent-ink"
         >
           <Icon name="play" :size="10" />
-          派發
+          執行
         </button>
       </div>
     </footer>

@@ -1,15 +1,19 @@
 use super::domain::Task;
+use crate::features::agents;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct CreateTaskDto {
     pub title: String,
     pub prompt: String,
     pub creator: Option<String>,
     pub assigned_agent: Option<String>,
     pub depends_on_task_id: Option<String>,
+    pub model: Option<String>,
+    pub workdir: Option<String>,
+    pub auto_approve: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,17 +26,31 @@ pub struct LeaseDto {
     pub lease_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct DispatchTaskDto {
+/// 執行設定（派發 / 直接執行時一併寫入任務）
+/// 欄位省略 = 保留原值；model / workdir 傳空字串 = 清除
+#[derive(Debug, Default, Deserialize)]
+pub struct RunOptions {
     pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub workdir: Option<String>,
+    pub auto_approve: Option<bool>,
 }
 
-/// 領取成功時回傳的任務，附帶僅領取者知道的租約 ID
+/// 領取成功時回傳的任務，附帶僅領取者知道的租約 ID，以及要執行的 argv
 #[derive(Debug, Serialize)]
 pub struct ClaimedTask {
     #[serde(flatten)]
     pub task: Task,
     pub lease_id: String,
+    /// 由 Agent Registry 組出；不支援的 Agent 為 None
+    pub command: Option<Vec<String>>,
+}
+
+impl ClaimedTask {
+    fn new(task: Task, lease_id: String) -> Self {
+        let command = task.assigned_agent.as_deref().and_then(|agent| agents::command_for(agent, &task));
+        Self { task, lease_id, command }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -66,18 +84,21 @@ pub struct TaskService;
 impl TaskService {
     /// 建立任務
     pub async fn create_task(pool: &Pool<Sqlite>, dto: CreateTaskDto) -> Result<Task, sqlx::Error> {
-        let task = Task::new(
+        let mut task = Task::new(
             dto.title,
             dto.prompt,
             dto.creator.unwrap_or_else(|| "human".to_string()),
             dto.assigned_agent,
             dto.depends_on_task_id,
         );
+        task.model = dto.model.filter(|m| !m.is_empty());
+        task.workdir = dto.workdir.filter(|w| !w.is_empty());
+        task.auto_approve = dto.auto_approve.unwrap_or(false);
 
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, depends_on_task_id, last_heartbeat_at, model, workdir, auto_approve, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -88,6 +109,9 @@ impl TaskService {
         .bind(&task.creator)
         .bind(&task.depends_on_task_id)
         .bind(&task.last_heartbeat_at)
+        .bind(&task.model)
+        .bind(&task.workdir)
+        .bind(task.auto_approve)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(pool)
@@ -155,14 +179,54 @@ impl TaskService {
         .fetch_optional(pool)
         .await?;
 
-        Ok(task.map(|task| ClaimedTask { task, lease_id }))
+        Ok(task.map(|task| ClaimedTask::new(task, lease_id)))
     }
 
-    /// 手動派發：把排隊中的任務提到最前面（可同時改指定 Agent），讓 Agent 下次輪詢就領到它
+    /// 領取指定任務（方案 A：面板直接執行）
+    /// 同時寫入執行設定；任務必須在佇列中且前置任務已完成，否則回傳 None
+    pub async fn claim_specific(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        agent_id: &str,
+        opts: &RunOptions,
+    ) -> Result<Option<ClaimedTask>, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let lease_id = uuid::Uuid::new_v4().to_string();
+
+        let task = sqlx::query_as::<_, Task>(
+            r#"
+            UPDATE tasks
+            SET status = 'running', assigned_agent = ?1, lease_id = ?2,
+                attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3,
+                model = NULLIF(COALESCE(?4, model), ''),
+                workdir = NULLIF(COALESCE(?5, workdir), ''),
+                auto_approve = COALESCE(?6, auto_approve)
+            WHERE id = ?7 AND status = 'queued'
+              AND (
+                depends_on_task_id IS NULL
+                OR EXISTS (SELECT 1 FROM tasks dep WHERE dep.id = tasks.depends_on_task_id AND dep.status = 'completed')
+              )
+            RETURNING *
+            "#,
+        )
+        .bind(agent_id)
+        .bind(&lease_id)
+        .bind(&now)
+        .bind(&opts.model)
+        .bind(&opts.workdir)
+        .bind(opts.auto_approve)
+        .bind(task_id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(task.map(|task| ClaimedTask::new(task, lease_id)))
+    }
+
+    /// 手動派發：寫入執行設定並把排隊中的任務提到最前面，讓 Agent 下次輪詢就領到它
     pub async fn dispatch_task(
         pool: &Pool<Sqlite>,
         task_id: &str,
-        agent_id: Option<&str>,
+        opts: &RunOptions,
     ) -> Result<Option<Task>, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query_as::<_, Task>(
@@ -170,16 +234,41 @@ impl TaskService {
             UPDATE tasks
             SET priority = (SELECT COALESCE(MAX(priority), 0) + 1 FROM tasks),
                 assigned_agent = COALESCE(?, assigned_agent),
+                model = NULLIF(COALESCE(?, model), ''),
+                workdir = NULLIF(COALESCE(?, workdir), ''),
+                auto_approve = COALESCE(?, auto_approve),
                 updated_at = ?
             WHERE id = ? AND status = 'queued'
             RETURNING *
             "#,
         )
-        .bind(agent_id)
+        .bind(&opts.agent_id)
+        .bind(&opts.model)
+        .bind(&opts.workdir)
+        .bind(opts.auto_approve)
         .bind(&now)
         .bind(task_id)
         .fetch_optional(pool)
         .await
+    }
+
+    /// 取消：排隊中或執行中的任務直接標記失敗並作廢租約
+    /// 持有舊租約的執行者（Spawner / Runner）下次心跳會被拒，進而中止子程序
+    pub async fn cancel_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let rows = sqlx::query(
+            "UPDATE tasks SET status = 'failed', lease_id = NULL, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')"
+        )
+        .bind(&now)
+        .bind(task_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if rows > 0 {
+            Self::cascade_dependency_failures(pool).await?;
+        }
+        Ok(rows > 0)
     }
 
     /// 任務心跳更新（必須持有目前的租約）
@@ -360,9 +449,8 @@ mod tests {
             CreateTaskDto {
                 title: title.into(),
                 prompt: "p".into(),
-                creator: None,
-                assigned_agent: None,
                 depends_on_task_id: dep.map(Into::into),
+                ..Default::default()
             },
         )
         .await
@@ -464,7 +552,7 @@ mod tests {
         let _older = new_task(&pool, "older", None).await;
         let newer = new_task(&pool, "newer", None).await;
 
-        let dispatched = TaskService::dispatch_task(&pool, &newer.id, Some("agy")).await.unwrap().unwrap();
+        let dispatched = TaskService::dispatch_task(&pool, &newer.id, &agy_opts()).await.unwrap().unwrap();
         assert_eq!(dispatched.assigned_agent.as_deref(), Some("agy"));
         assert!(dispatched.priority > 0);
 
@@ -475,7 +563,83 @@ mod tests {
         assert_eq!(claimed.task.id, newer.id);
 
         // 已在執行中的任務不能再派發
-        assert!(TaskService::dispatch_task(&pool, &newer.id, None).await.unwrap().is_none());
+        assert!(TaskService::dispatch_task(&pool, &newer.id, &RunOptions::default()).await.unwrap().is_none());
+    }
+
+    fn agy_opts() -> RunOptions {
+        RunOptions { agent_id: Some("agy".into()), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn dispatch_options_keep_omitted_fields_and_clear_empty_ones() {
+        let pool = memory_pool().await;
+        let task = new_task(&pool, "a", None).await;
+        let opts = RunOptions { model: Some("opus".into()), workdir: Some("/tmp".into()), auto_approve: Some(true), ..agy_opts() };
+        TaskService::dispatch_task(&pool, &task.id, &opts).await.unwrap().unwrap();
+
+        // 只改 model 為空字串：清除 model，其餘保留
+        let cleared = TaskService::dispatch_task(&pool, &task.id, &RunOptions { model: Some("".into()), ..Default::default() })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.model, None);
+        assert_eq!(cleared.workdir.as_deref(), Some("/tmp"));
+        assert!(cleared.auto_approve);
+        assert_eq!(cleared.assigned_agent.as_deref(), Some("agy"));
+    }
+
+    #[tokio::test]
+    async fn claim_returns_command_from_registry() {
+        let pool = memory_pool().await;
+        let task = new_task(&pool, "a", None).await;
+        let opts = RunOptions { model: Some("haiku".into()), agent_id: Some("claude".into()), ..Default::default() };
+        TaskService::dispatch_task(&pool, &task.id, &opts).await.unwrap();
+
+        let claimed = TaskService::claim_task(&pool, "claude").await.unwrap().unwrap();
+        assert_eq!(
+            claimed.command.unwrap(),
+            ["claude", "--model", "haiku", "--permission-mode", "acceptEdits", "-p", "p"]
+        );
+        // 不在 Registry 裡的 Agent 也能領取，但沒有 command
+        new_task(&pool, "b", None).await;
+        assert!(TaskService::claim_task(&pool, "custom").await.unwrap().unwrap().command.is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_specific_respects_queue_state_and_dependencies() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+
+        // 前置任務未完成：不能直接執行
+        assert!(TaskService::claim_specific(&pool, &b.id, "agy", &agy_opts()).await.unwrap().is_none());
+
+        let opts = RunOptions { model: Some("gemini-4-argon-high".into()), ..Default::default() };
+        let claimed = TaskService::claim_specific(&pool, &a.id, "agy", &opts).await.unwrap().unwrap();
+        assert_eq!(claimed.task.model.as_deref(), Some("gemini-4-argon-high"));
+        assert_eq!(claimed.task.assigned_agent.as_deref(), Some("agy"));
+        // 已在執行中：Runner 與第二次 spawn 都拿不到
+        assert!(TaskService::claim_specific(&pool, &a.id, "agy", &opts).await.unwrap().is_none());
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+
+        assert!(TaskService::complete_task(&pool, &a.id, &claimed.lease_id).await.unwrap());
+        assert!(TaskService::claim_specific(&pool, &b.id, "claude", &RunOptions::default()).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn cancel_revokes_lease_and_fails_dependents() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+
+        assert!(TaskService::cancel_task(&pool, &a.id).await.unwrap());
+        assert!(!TaskService::heartbeat(&pool, &a.id, &claimed.lease_id).await.unwrap());
+        assert!(!TaskService::complete_task(&pool, &a.id, &claimed.lease_id).await.unwrap());
+        assert_eq!(status(&pool, &a.id).await, "failed");
+        assert_eq!(status(&pool, &b.id).await, "failed");
+        // 已結束的任務不能再取消
+        assert!(!TaskService::cancel_task(&pool, &a.id).await.unwrap());
     }
 
     #[tokio::test]

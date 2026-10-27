@@ -19,7 +19,7 @@ const copyText = async (text: string, index: number) => {
   }
 };
 
-const curlCreateTask = `curl -X POST http://127.0.0.1:3000/api/tasks \\
+const curlCreateTask = `curl -X POST http://127.0.0.1:18833/api/tasks \\
   -H "Authorization: Bearer $(cat ~/.local/share/com.naxo.agent-board/api_token)" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -29,7 +29,7 @@ const curlCreateTask = `curl -X POST http://127.0.0.1:3000/api/tasks \\
     "assigned_agent": "agy"
   }'`;
 
-const curlCreateWithDep = `curl -X POST http://127.0.0.1:3000/api/tasks \\
+const curlCreateWithDep = `curl -X POST http://127.0.0.1:18833/api/tasks \\
   -H "Authorization: Bearer $(cat ~/.local/share/com.naxo.agent-board/api_token)" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -73,7 +73,7 @@ systemctl --user enable --now agent-board-runner.service`;
             <span>1. 如何讓 Claude / 自動化 Agent 丟任務上來？</span>
           </h4>
           <p class="text-slate-500 mb-2 leading-relaxed">
-            只要讓 Agent 透過終端機執行或發送 HTTP POST 至內嵌的 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono text-indigo-600 dark:text-indigo-400">http://127.0.0.1:3000/api/tasks</code>：
+            只要讓 Agent 透過終端機執行或發送 HTTP POST 至內嵌的 <code class="bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono text-indigo-600 dark:text-indigo-400">http://127.0.0.1:18833/api/tasks</code>：
           </p>
           <div class="relative bg-slate-950 text-slate-200 rounded-xl p-3 font-mono text-[11px] border border-slate-800">
             <button

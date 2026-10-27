@@ -5,9 +5,10 @@ import TaskCard from "./components/TaskCard.vue";
 import CreateTaskModal from "./components/CreateTaskModal.vue";
 import TaskDetailDrawer from "./components/TaskDetailDrawer.vue";
 import ApiGuideModal from "./components/ApiGuideModal.vue";
+import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
 import Icon from "./components/Icon.vue";
 import { STATUS_META, agentMeta } from "./ui";
-import type { CreateTaskPayload, Task, TaskStatus } from "./types";
+import type { CreateTaskPayload, RunOptions, Task, TaskStatus } from "./types";
 
 const {
   tasks,
@@ -24,11 +25,15 @@ const {
   fetchTasks,
   createTask,
   selectTask,
+  agents,
+  spawnTask,
   dispatchTask,
+  cancelTask,
 } = useTasks();
 
 const showCreateModal = ref(false);
 const showApiGuide = ref(false);
+const runTarget = ref<Task | null>(null);
 const search = ref("");
 const searchInput = ref<HTMLInputElement | null>(null);
 
@@ -68,11 +73,26 @@ const handleSelectTask = (task: Task) => {
   selectTask(task.id);
 };
 
-const handlePlay = async (task: Task, agent: string) => {
+const handleRun = async (mode: RunMode, opts: RunOptions) => {
+  const task = runTarget.value;
+  if (!task) return;
   try {
-    await dispatchTask(task.id, agent);
+    await (mode === "spawn" ? spawnTask : dispatchTask)(task.id, opts);
+    runTarget.value = null;
+    // 立即執行時打開詳情抽屜，直接看即時日誌
+    if (mode === "spawn") selectTask(task.id);
   } catch (err: any) {
-    alert("派發失敗: " + err.message);
+    alert((mode === "spawn" ? "執行失敗: " : "派發失敗: ") + err.message);
+  }
+};
+
+const handleCancel = async () => {
+  const task = selectedTask.value;
+  if (!task || !confirm(`確定取消「${task.title}」？執行中的 Agent 會被中止，依賴它的任務也會一併失敗。`)) return;
+  try {
+    await cancelTask(task.id);
+  } catch (err: any) {
+    alert("取消失敗: " + err.message);
   }
 };
 
@@ -80,7 +100,8 @@ const handlePlay = async (task: Task, agent: string) => {
 const onKeydown = (e: KeyboardEvent) => {
   const typing = e.target instanceof HTMLElement && ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (e.key === "Escape") {
-    if (showCreateModal.value) showCreateModal.value = false;
+    if (runTarget.value) runTarget.value = null;
+    else if (showCreateModal.value) showCreateModal.value = false;
     else if (typing) (e.target as HTMLElement).blur();
     else selectedTaskId.value = null;
   } else if (!typing && e.key === "n") {
@@ -153,7 +174,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           <span :class="['relative inline-flex h-2 w-2 rounded-full', error ? 'bg-rose-500' : 'bg-emerald-500']"></span>
         </span>
         <span class="text-ink-2">{{ error ? "API 離線" : "API 連線中" }}</span>
-        <span class="ml-auto font-mono text-ink-3">:3000</span>
+        <span class="ml-auto font-mono text-ink-3">:18833</span>
       </div>
     </aside>
 
@@ -202,7 +223,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <!-- Error Banner -->
       <div v-if="error" class="shrink-0 flex items-center gap-2 border-b border-rose-500/25 bg-rose-500/10 px-5 py-2 text-xs text-rose-700 dark:text-rose-300">
         <span class="h-1.5 w-1.5 rounded-full bg-rose-500"></span>
-        <span class="flex-1">無法連線：{{ error }}（請確認後端是否正在監聽 http://127.0.0.1:3000）</span>
+        <span class="flex-1">無法連線：{{ error }}（請確認後端是否正在監聽 http://127.0.0.1:18833）</span>
         <button @click="fetchTasks" class="font-medium underline-offset-2 hover:underline">重試</button>
         <button @click="error = null" class="ml-1 opacity-70 hover:opacity-100"><Icon name="x" :size="14" /></button>
       </div>
@@ -229,7 +250,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
                 :task="task"
                 :isSelected="task.id === selectedTaskId"
                 @select="handleSelectTask"
-                @play="(agent) => handlePlay(task, agent)"
+                @run="runTarget = task"
               />
               <div
                 v-if="col.tasks.length === 0"
@@ -246,6 +267,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           :task="selectedTask"
           :logs="activeTaskLogs"
           @close="selectedTaskId = null"
+          @cancel="handleCancel"
         />
       </div>
     </div>
@@ -258,6 +280,14 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
     />
 
     <!-- API & Agent Integration Guide Modal -->
+    <RunTaskModal
+      v-if="runTarget"
+      :task="runTarget"
+      :agents="agents"
+      @run="handleRun"
+      @close="runTarget = null"
+    />
+
     <ApiGuideModal
       v-if="showApiGuide"
       @close="showApiGuide = false"

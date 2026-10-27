@@ -11,6 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "close"): void;
+  (e: "cancel"): void;
 }>();
 
 const logBox = ref<HTMLElement | null>(null);
@@ -50,6 +51,15 @@ const logLevelClass = (level: string) =>
         </span>
         <span class="font-mono text-xs text-ink-3 select-text">#{{ task.id.slice(0, 8) }}</span>
       </div>
+      <div class="flex items-center gap-1">
+      <button
+        v-if="task.status === 'queued' || task.status === 'running'"
+        @click="emit('cancel')"
+        title="取消任務（執行中的 Agent 會被中止）"
+        class="h-7 rounded-md px-2 text-xs font-medium text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+      >
+        取消任務
+      </button>
       <button
         @click="emit('close')"
         title="關閉 (Esc)"
@@ -57,6 +67,7 @@ const logLevelClass = (level: string) =>
       >
         <Icon name="x" />
       </button>
+      </div>
     </div>
 
     <!-- Content -->
@@ -71,6 +82,16 @@ const logLevelClass = (level: string) =>
             {{ task.assigned_agent ? `@${task.assigned_agent}` : "任意 Agent" }}
           </span>
         </dd>
+        <dt class="text-ink-3">模型</dt>
+        <dd class="font-mono text-ink-2">{{ task.model ?? "預設" }}</dd>
+        <template v-if="task.workdir">
+          <dt class="text-ink-3">工作目錄</dt>
+          <dd class="font-mono text-ink-2 break-all select-text">{{ task.workdir }}</dd>
+        </template>
+        <template v-if="task.auto_approve">
+          <dt class="text-ink-3">權限</dt>
+          <dd class="font-medium text-rose-600 dark:text-rose-400">完整權限</dd>
+        </template>
         <dt class="text-ink-3">建立者</dt>
         <dd class="text-ink">{{ task.creator }}</dd>
         <dt class="text-ink-3">建立時間</dt>

@@ -1,6 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { Task, TaskLog, CreateTaskPayload } from "../types";
+import type { AgentDef, CreateTaskPayload, RunOptions, Task, TaskLog } from "../types";
 
 interface ApiConfig {
   base_url: string;
@@ -9,7 +9,7 @@ interface ApiConfig {
 
 // API 需要 token：在 Tauri 視窗內向 Rust 端取得；純瀏覽器開發時改用 VITE_API_TOKEN
 const apiConfig: Promise<ApiConfig> = invoke<ApiConfig>("get_api_config").catch(() => ({
-  base_url: "http://127.0.0.1:3000",
+  base_url: "http://127.0.0.1:18833",
   token: import.meta.env.VITE_API_TOKEN ?? "",
 }));
 
@@ -72,15 +72,24 @@ export function useTasks() {
     fetchLogs(taskId);
   };
 
-  // 派發：把任務排到該 Agent 佇列最前面，由 Runner 下次輪詢領取並執行
-  const dispatchTask = async (taskId: string, agentId: string) => {
-    const res = await api(`/api/tasks/${taskId}/dispatch`, {
-      method: "POST",
-      body: JSON.stringify({ agent_id: agentId }),
-    });
+  const agents = ref<AgentDef[]>([]);
+  const fetchAgents = async () => {
+    const res = await api("/api/agents");
+    if (res.ok) agents.value = (await res.json()) as AgentDef[];
+  };
+
+  const postTaskAction = async (taskId: string, action: string, body?: object) => {
+    const res = await api(`/api/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify(body ?? {}) });
     if (!res.ok) throw new Error(await res.text());
     fetchTasks();
   };
+
+  // 方案 A：寫入執行設定，由面板後端立即拉起 Agent 子程序
+  const spawnTask = (taskId: string, opts: RunOptions) => postTaskAction(taskId, "spawn", opts);
+  // 方案 B：寫入執行設定並排到該 Agent 佇列最前面，由 Runner 下次輪詢領取
+  const dispatchTask = (taskId: string, opts: RunOptions) => postTaskAction(taskId, "dispatch", opts);
+  // 排隊中或執行中都能取消；Runner 執行的任務會在下次心跳時中止
+  const cancelTask = (taskId: string) => postTaskAction(taskId, "cancel");
 
   // 即時監聽後端 SSE 事件
   const initSSE = async () => {
@@ -113,6 +122,7 @@ export function useTasks() {
 
   onMounted(() => {
     fetchTasks();
+    fetchAgents();
     initSSE();
   });
 
@@ -153,6 +163,9 @@ export function useTasks() {
     fetchTasks,
     createTask,
     selectTask,
+    agents,
+    spawnTask,
     dispatchTask,
+    cancelTask,
   };
 }

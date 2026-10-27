@@ -1,6 +1,8 @@
+use crate::features::agents::AGENTS;
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
+use crate::features::execution::{SpawnError, Spawner};
 use crate::features::messages::{MessageService, SendMessageDto};
-use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, DispatchTaskDto, LeaseDto, TaskService};
+use crate::features::tasks::{AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RunOptions, TaskService};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -28,6 +30,7 @@ pub struct ServerState {
     pub pool: Pool<Sqlite>,
     pub event_tx: broadcast::Sender<BoardEvent>,
     pub api_token: Arc<String>,
+    pub spawner: Spawner,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +46,9 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}", get(get_task))
         .route("/api/tasks/claim", post(claim_task))
         .route("/api/tasks/{id}/dispatch", post(dispatch_task))
+        .route("/api/tasks/{id}/spawn", post(spawn_task))
+        .route("/api/tasks/{id}/cancel", post(cancel_task))
+        .route("/api/agents", get(list_agents))
         .route("/api/tasks/{id}/heartbeat", post(heartbeat_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
         .route("/api/tasks/{id}/fail", post(fail_task))
@@ -121,9 +127,9 @@ async fn claim_task(
 async fn dispatch_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Json(dto): Json<DispatchTaskDto>,
+    Json(opts): Json<RunOptions>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let task = TaskService::dispatch_task(&state.pool, &id, dto.agent_id.as_deref())
+    let task = TaskService::dispatch_task(&state.pool, &id, &opts)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::CONFLICT, "Task not found or not queued".to_string()))?;
@@ -134,6 +140,46 @@ async fn dispatch_task(
     });
 
     Ok(Json(task))
+}
+
+async fn spawn_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+    Json(opts): Json<RunOptions>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    match state.spawner.spawn(&id, opts).await {
+        Ok(task) => Ok(Json(task)),
+        Err(SpawnError::UnsupportedAgent) => Err((StatusCode::BAD_REQUEST, "Unsupported agent".to_string())),
+        Err(SpawnError::NotClaimable) => Err((
+            StatusCode::CONFLICT,
+            "Task not queued or its dependency is not completed".to_string(),
+        )),
+        Err(SpawnError::Db(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn cancel_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let cancelled = TaskService::cancel_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !cancelled {
+        return Err((StatusCode::CONFLICT, "Task not queued or running".to_string()));
+    }
+
+    // 本機子程序立即 kill；Runner 執行的任務則在下次心跳被拒時自行中止
+    state.spawner.kill(&id);
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "task_failed".to_string(),
+        payload: serde_json::json!({ "id": id, "cancelled": true }),
+    });
+    Ok(StatusCode::OK)
+}
+
+async fn list_agents() -> impl IntoResponse {
+    Json(AGENTS)
 }
 
 const LEASE_MISMATCH: &str = "Task not running or lease mismatch";

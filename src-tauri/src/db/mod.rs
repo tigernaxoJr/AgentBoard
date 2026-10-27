@@ -48,6 +48,9 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             lease_id TEXT,
             attempts INTEGER NOT NULL DEFAULT 0,
             priority INTEGER NOT NULL DEFAULT 0,
+            model TEXT,
+            workdir TEXT,
+            auto_approve INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id)
@@ -96,6 +99,9 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("lease_id", "lease_id TEXT"),
         ("attempts", "attempts INTEGER NOT NULL DEFAULT 0"),
         ("priority", "priority INTEGER NOT NULL DEFAULT 0"),
+        ("model", "model TEXT"),
+        ("workdir", "workdir TEXT"),
+        ("auto_approve", "auto_approve INTEGER NOT NULL DEFAULT 0"),
     ] {
         let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM pragma_table_info('tasks') WHERE name = ?")
             .bind(column)

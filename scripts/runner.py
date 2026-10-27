@@ -10,13 +10,14 @@ import sys
 import time
 import argparse
 import platform
+import signal
 import subprocess
 import threading
 from pathlib import Path
 
 import requests
 
-DEFAULT_SERVER_URL = "http://127.0.0.1:3000"
+DEFAULT_SERVER_URL = "http://127.0.0.1:18833"
 APP_IDENTIFIER = "com.naxo.agent-board"
 # 需小於後端的 LEASE_TIMEOUT_SECS（預設 60 秒）
 HEARTBEAT_INTERVAL = float(os.environ.get("AGENT_BOARD_HEARTBEAT_SECS", 15))
@@ -110,6 +111,13 @@ class HeartbeatThread(threading.Thread):
         self.stopped.set()
 
 
+def kill_tree(proc: subprocess.Popen):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError):  # Windows 沒有 killpg
+        proc.kill()
+
+
 def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
     agent_id = board.agent_id
 
@@ -135,18 +143,28 @@ def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
         board.log(task, "任務模擬執行完成！")
         return
 
-    # 本機開啟獨立 agy session
+    # argv 由伺服器的 Agent Registry 組好（含 --model 與權限參數），Runner 不自帶指令表
+    command = task.get("command")
+    if not command:
+        board.log(task, f"不支援的 Agent：{task.get('assigned_agent')}", level="ERROR")
+        board.finish(task, ok=False)
+        return
+
+    workdir = task.get("workdir") or None
     try:
-        board.log(task, "喚醒本機 agy session...")
+        board.log(task, f"執行：{' '.join(command[:-1])}（工作目錄：{workdir or os.getcwd()}）")
         proc = subprocess.Popen(
-            ["agy", task["prompt"]],
+            command,
+            cwd=workdir,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,  # 獨立 process group，中止時連同工具子程序一起結束
         )
-        # agy 長時間沒輸出時 readline 會卡住，心跳必須在另一個執行緒送
-        hb = HeartbeatThread(board, task, on_lost=proc.terminate)
+        # Agent 長時間沒輸出時 readline 會卡住，心跳必須在另一個執行緒送
+        hb = HeartbeatThread(board, task, on_lost=lambda: kill_tree(proc))
         hb.start()
 
         for line in proc.stdout:
@@ -158,7 +176,7 @@ def execute(board: Board, task, dry_run=False, dry_run_seconds=3):
         hb.stop()
 
         if hb.lost:
-            print(f"[{agent_id}] 租約已失效，已中止 agy（任務已被回收）")
+            print(f"[{agent_id}] 租約已失效，已中止 {command[0]}（任務被取消或回收）")
         elif ret == 0:
             board.finish(task, ok=True)
             board.log(task, "任務已成功完成！")

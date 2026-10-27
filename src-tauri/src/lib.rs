@@ -34,10 +34,14 @@ pub async fn serve(db_path: &str, api_token: String, port: u16, lease_timeout_se
     // 啟動逾時重置背景任務
     start_background_workers(pool.clone(), event_tx.clone(), lease_timeout_secs).await;
 
+    // 方案 A 的子程序心跳頻率與 Runner 一致：逾時時間的 1/3
+    let heartbeat_every = std::time::Duration::from_secs((lease_timeout_secs / 3).max(1) as u64);
+    let spawner = features::execution::Spawner::new(pool.clone(), event_tx.clone(), heartbeat_every);
     let server_state = ServerState {
         pool,
         event_tx,
         api_token: Arc::new(api_token),
+        spawner,
     };
 
     println!("[*] Agent Board API Server running on http://127.0.0.1:{}", port);
@@ -57,14 +61,14 @@ pub fn run() {
             let token = server::auth::load_or_create_token(&token_path)?;
             println!("[*] API token file: {}", token_path.display());
 
-            let port = env_or("PORT", 3000u16);
+            let port = env_or("PORT", 18833u16);
             let lease_timeout = env_or("LEASE_TIMEOUT_SECS", 60i64);
             app.manage(ApiConfig {
                 base_url: format!("http://127.0.0.1:{}", port),
                 token: token.clone(),
             });
 
-            // 初始化 SQLite 資料庫與後端服務（預設埠號 3000）
+            // 初始化 SQLite 資料庫與後端服務（預設埠號 18833）
             tauri::async_runtime::spawn(async move {
                 serve("agent_board.db", token, port, lease_timeout).await;
             });

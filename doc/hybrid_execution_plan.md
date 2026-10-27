@@ -1,116 +1,133 @@
 # 📋 Agent Board: A + B 雙軌執行架構規劃書 (Hybrid Execution Plan)
 
 ## 🎯 目標與背景
-使用者需要能靈活驅動 **`agy`** 與 **`claude`** 執行任務，並具備自訂模型的彈性：
-1. **方案 A (Direct Spawn)**：使用者在 Web/桌面面板上看到任務卡片，點擊 **「▶ Play」** 時可選擇 Agent 與模型，由面板後端直接拉起本機 Process 執行，日誌即時推播，所見即所得。
-2. **方案 B (Autonomous Runner)**：無人值守場景（如 Claude 批量產生 10 個任務或開機背景服務），由輕量 Runner 自動輪詢領取任務並執行，零手動干預。
+使用者需要能靈活驅動 **`agy`** 與 **`claude`** 執行任務，並可逐任務指定模型：
+1. **方案 A (Direct Spawn)**：在面板點擊任務卡片的 **「▶ 執行」**，選擇 Agent 與模型後，由面板後端直接拉起本機 Process 執行，日誌即時推播，所見即所得。
+2. **方案 B (Autonomous Runner)**：無人值守場景（如 Claude 批量產生 10 個任務、開機背景服務），由輕量 Runner 輪詢領取並執行，零手動干預。
 
-雙軌架構彼此共用相同的資料庫狀態機、即時日誌流與完成回報端點，互不衝突。
+兩軌共用**同一套狀態機與租約（lease）**、同一份 Agent 指令表、同一條日誌流，彼此不會搶到同一個任務。
 
 ---
 
-## 🏗️ 核心架構設計
+## ✨ 相較初版的調整（優化重點）
 
-### 1. 雙軌架構全景圖
+| # | 初版設計 | 調整後 | 原因 |
+|---|---|---|---|
+| 1 | Spawner 直接把任務設成 `running` | Spawner 透過 `claim_specific` 取得**租約**，執行期間自己送心跳 | 與 Runner 共用原子領取，不會雙重執行；App 關閉時子程序跟著結束，租約逾時後自動重試（最多 3 次） |
+| 2 | 指令模板在 Rust 與 `runner.py` 各寫一份 | 只在後端的 **Agent Registry** 定義；`claim` 回傳組好的 `command`（argv） | 兩邊永遠一致；新增 Agent 只改一處 |
+| 3 | `agy -p "<prompt>" --model <model>` | 參數放前面、prompt 放最後，`-p` 必帶；不經過 shell；stdin 關閉 | agy 用 Go flag 解析，遇到第一個非 flag 參數就停止，放在 prompt 之後的 flag 會被忽略；舊 Runner 少了 `-p` 會進入互動模式卡住；不經 shell，prompt 內容就不會被當成指令執行 |
+| 4 | 權限未定義 | 預設只自動核准**檔案編輯**；要給「完整權限」得逐任務勾選 | 非互動模式下沒有人能回答權限詢問；完整權限等於讓任務內容任意執行指令，不能是預設值 |
+| 5 | 無法中止 | 新增 `POST /api/tasks/{id}/cancel` | 方案 A：直接 kill 子程序；方案 B：租約作廢，Runner 下次心跳收到 409 後自行中止 agy |
+| 6 | 未定義工作目錄 | 任務新增 `workdir` | Tauri App 的 cwd 不固定，Agent 需要知道要在哪個專案裡工作 |
+| 7 | 模型清單為假設值 | 改為 CLI 實際支援的值（`agy models` 輸出與 claude 的模型別名） | `claude-3-7-sonnet` 等名稱已過時 |
+| 8 | Play 只做方案 A | 執行彈窗提供兩種模式：**立即在本機執行**（A）或 **派發給 Runner**（B） | 同一個入口，使用者依情境選擇 |
+
+---
+
+## 🏗️ 架構
 
 ```mermaid
 flowchart TD
     subgraph UI["🖥️ Agent Board 面板 (Vue 3 + Tauri)"]
-        Card["任務卡片"]
-        PlayModal["Play 執行彈窗\n(選擇 Agent: agy/claude, 選擇 Model)"]
-        LiveDrawer["Live Log 即時日誌抽屜"]
+        Card["任務卡片 ▶ 執行"]
+        RunModal["執行彈窗<br/>Agent / Model / 工作目錄 / 權限<br/>模式：立即執行 or 派發"]
+        Drawer["詳情抽屜<br/>Live Logs ・ 取消"]
     end
 
-    subgraph Backend["⚙️ 後端核心 (Rust / Axum + SQLite WAL)"]
-        API["REST API\n- POST /api/tasks/{id}/spawn (方案 A)\n- POST /api/tasks/claim (方案 B)\n- POST /api/tasks/{id}/logs"]
-        DB[(SQLite tasks/task_logs)]
-        SSE["SSE 廣播 (/api/events)"]
-        LocalSpawner["本地執行引擎 (Local Process Spawner)"]
+    subgraph Backend["⚙️ 後端 (Rust / Axum + SQLite WAL)"]
+        Registry["Agent Registry<br/>agy / claude 指令表與模型清單"]
+        Lifecycle["任務狀態機 + 租約<br/>claim / claim_specific / heartbeat<br/>complete / fail / cancel"]
+        Spawner["Local Spawner<br/>tokio::process + 心跳 + kill"]
+        SSE["SSE /api/events"]
     end
 
-    subgraph AutonomousWorker["🤖 方案 B：常駐 Runner (無人值守)"]
-        RunnerScript["scripts/runner.py\n(systemd --user 開機常駐)"]
+    subgraph Runner["🤖 方案 B：scripts/runner.py (systemd --user)"]
+        Poll["輪詢 claim → 執行 command → 心跳 / 日誌 / 回報"]
     end
 
-    subgraph CLI["💻 本機 Agent CLI 執行"]
-        AgyCLI["agy -p '<prompt>' --model <model>"]
-        ClaudeCLI["claude -p '<prompt>' --model <model>"]
-    end
-
-    %% 方案 A 流程
-    Card -->|點擊 Play| PlayModal
-    PlayModal -->|確認執行| API
-    API -->|方案 A: 立即拉起| LocalSpawner
-    LocalSpawner -->|執行| AgyCLI
-    LocalSpawner -->|執行| ClaudeCLI
-    LocalSpawner -->|即時寫入 stdout| DB
-    DB -->|廣播 log| SSE
-    SSE -->|即時滾動| LiveDrawer
-
-    %% 方案 B 流程
-    RunnerScript -->|定時檢查/認領| API
-    API -->|方案 B: 認領成功| RunnerScript
-    RunnerScript -->|執行| AgyCLI
-    RunnerScript -->|執行| ClaudeCLI
-    RunnerScript -->|即時回報日誌| API
+    Card --> RunModal
+    RunModal -->|"POST /spawn（A）"| Spawner
+    RunModal -->|"POST /dispatch（B）"| Lifecycle
+    Drawer -->|"POST /cancel"| Lifecycle
+    Spawner --> Lifecycle
+    Spawner --> Registry
+    Poll -->|"POST /claim（回傳 lease_id + command）"| Lifecycle
+    Lifecycle --> Registry
+    Lifecycle --> SSE
+    SSE --> Drawer
 ```
 
 ---
 
-## 🛠️ 詳細規格設計
+## 🛠️ 詳細規格
 
-### 1. 資料模型擴充 (`tasks` 資料表)
-在 `tasks` 表增加模型欄位以持久化執行偏好：
-* `model TEXT`：指定使用的模型名稱（例如：`gemini-3.8-flash-low`、`claude-sonnet-5-5-medium`、`claude-3-5-sonnet`）。若為 `NULL` 則使用 Agent 預設模型。
+### 1. 資料模型（`tasks` 新增欄位，啟動時自動遷移）
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `model` | `TEXT NULL` | 指定模型；`NULL` 代表使用 Agent 預設 |
+| `workdir` | `TEXT NULL` | 執行時的工作目錄；`NULL` 代表 Runner 的 cwd，方案 A 則為 `AGENT_BOARD_WORKDIR` 或家目錄 |
+| `auto_approve` | `INTEGER NOT NULL DEFAULT 0` | `1` = 完整權限（略過所有權限詢問） |
 
-### 2. 支援的 Agent CLI 指令映射
+### 2. Agent 指令映射（Agent Registry）
 
-| Agent | 執行指令模板 | 說明 |
-| :--- | :--- | :--- |
-| **agy** | `agy -p "<prompt>" --model <model>` | 以非互動 print 模式執行單次 prompt，可選附帶 `--dangerously-skip-permissions` |
-| **claude** | `claude -p "<prompt>" --model <model>` | 以 non-interactive print 模式執行 prompt |
+| Agent | argv（prompt 永遠在最後） |
+|---|---|
+| **agy** | `agy [--model M] (--mode accept-edits \| --dangerously-skip-permissions) -p <prompt>` |
+| **claude** | `claude [--model M] --permission-mode (acceptEdits \| bypassPermissions) -p <prompt>` |
 
-#### 常用模型選項 (Model Presets)
-* **agy (Gemini / Claude / OSS 系列)**：
-  * `gemini-3.8-flash-low`（預設，輕量快速）
-  * `gemini-4-argon-medium`
-  * `claude-sonnet-5-5-medium`
-  * `claude-opus-5-5-high`
-* **claude (Anthropic 系列)**：
-  * `claude-3-7-sonnet`（預設推薦）
-  * `claude-3-5-sonnet`
-  * `claude-3-5-haiku`
+括號內前者為預設，後者為勾選「完整權限」時使用。
 
----
+**模型預設清單**（下拉選單可自行輸入其他值）：
+* **agy**（`agy models`）：`gemini-3.8-flash-low`（預設）、`gemini-3.8-flash-medium`、`gemini-4-argon-medium`、`gemini-4-argon-high`、`claude-sonnet-5-5-medium`、`claude-opus-5-5-high`、`gpt-oss-120b-medium`
+* **claude**（模型別名或完整名稱）：`sonnet`（預設）、`opus`、`haiku`、`fable`
 
-## 📐 實作分工與時序
+### 3. API
 
-### 方案 A：面板直接 Spawn Process 流程
-1. 使用者在面板點擊卡片上的 **「▶ Play」**。
-2. 彈出 **「執行任務 (Run Task)」** 對話框：
-   * 選擇 Target Agent（預設讀取任務被指派者，可手動切換 `agy` 或 `claude`）。
-   * 選擇 Model（下拉選單提供 Preset，亦可自行輸入）。
-3. 面板發送 `POST /api/tasks/{id}/spawn`：
-   * Payload: `{ "agent_id": "agy", "model": "gemini-3.8-flash-low" }`
-4. 後端 Rust 核心：
-   * 將任務狀態更新為 `running`，記錄 `assigned_agent` 與 `model`。
-   * 以 `tokio::process::Command` 非同步啟動子進程。
-   * 透過管線逐行讀取 stdout/stderr，寫入 `task_logs` 表並透過 SSE 廣播。
-   * 進程退出碼為 0 則標為 `completed`，非 0 標為 `failed`。
+| 端點 | Body | 說明 |
+|---|---|---|
+| `GET /api/agents` | — | Agent 清單與模型預設值（前端下拉選單用） |
+| `POST /api/tasks/{id}/spawn` | `{ agent_id, model?, workdir?, auto_approve? }` | **方案 A**：儲存執行設定 → `claim_specific` → 拉起子程序 |
+| `POST /api/tasks/{id}/dispatch` | 同上（`agent_id` 可省略） | **方案 B**：儲存執行設定並排到該 Agent 佇列最前面 |
+| `POST /api/tasks/claim` | `{ agent_id }` | 回傳任務 + `lease_id` + `command`（argv；不支援的 Agent 為 `null`） |
+| `POST /api/tasks/{id}/cancel` | — | `queued` / `running` → `failed`，租約作廢、本機子程序 kill，依賴鏈一併失敗 |
 
-### 方案 B：外部 Runner 增強支援
-1. 更新 [`scripts/runner.py`](file:///home/naxo/private/agent_board/scripts/runner.py)：
-   * 領取任務（`claim_task`）時解析回傳的 `assigned_agent` 與 `model`。
-   * 若任務有指定 `model`，自動加上 `--model <model>` 參數。
-   * 依據 `assigned_agent` 自動分支執行 `agy` 或 `claude` CLI。
-   * 保持原有背景發送心跳與日誌串流至看板。
+`spawn` 在任務不在佇列中、前置任務未完成或 Agent 不支援時回 `409`。
 
 ---
 
-## 📅 實施步驟 (Action Items)
+## 📐 執行時序
 
-- [ ] **Step 1 (DB 遷移)**：在 `tasks` 表增加 `model` 欄位。
-- [ ] **Step 2 (後端 Spawner)**：在 Rust 後端新增 `POST /api/tasks/{id}/spawn` 端點與子程序管理模組。
-- [ ] **Step 3 (前端 Play 彈窗)**：實作「執行設定彈窗（Play Modal）」，提供 Agent 與 Model 快速選擇。
-- [ ] **Step 4 (Runner 增強)**：更新 `runner.py` 支援 `claude` 與 `--model` 參數解析。
-- [ ] **Step 5 (整合測試)**：驗證手動 Play 與常駐 Runner 兩種模式調用 `agy` / `claude` 順利產出日誌。
+### 方案 A：面板直接 Spawn
+1. 使用者點擊卡片 **「▶ 執行」** → 彈出執行彈窗（預設帶入任務目前的 Agent / 模型 / 工作目錄）。
+2. 選擇「立即在本機執行」 → `POST /api/tasks/{id}/spawn`。
+3. 後端：
+   * 寫入執行設定，以 `claim_specific` 原子領取該任務（狀態必須是 `queued`、前置任務必須已完成），取得租約。
+   * 依 Registry 組出 argv，以 `tokio::process::Command` 啟動（`stdin` 關閉、`kill_on_drop`）。
+   * stdout / stderr 逐行寫入 `task_logs` 並以 SSE 廣播。
+   * 每 `LEASE_TIMEOUT_SECS / 3` 秒送一次心跳；心跳被拒（任務被取消或回收）就 kill 子程序。
+   * 結束碼 0 → `completed`，非 0 → `failed`；被取消則不覆寫狀態。
+
+### 方案 B：常駐 Runner
+1. 使用者選「派發給 Runner」 → `POST /api/tasks/{id}/dispatch`，或任務本來就在佇列中。
+2. `runner.py` 輪詢 `claim`，拿到 `lease_id` 與 `command`，在 `workdir`（若有）執行 `command`。
+3. 心跳執行緒獨立運作；收到 409（被取消或回收）就中止子程序。
+4. 依結束碼回報 `complete` / `fail`。
+
+---
+
+## 📅 實施步驟
+
+- [x] **Step 1 (DB)**：`tasks` 新增 `model`、`workdir`、`auto_approve`。
+- [x] **Step 2 (Registry)**：`features/agents`，負責組出 argv 與提供 `GET /api/agents`。
+- [x] **Step 3 (Spawner)**：`features/execution`，新增 `spawn` / `cancel` 端點，`claim` 回傳 `command`。
+- [x] **Step 4 (前端)**：執行彈窗（兩種模式）、抽屜顯示執行設定與取消按鈕。
+- [x] **Step 5 (Runner)**：改用伺服器回傳的 `command`，支援 `workdir`。
+- [x] **Step 6 (測試)**：Rust 單元測試（argv、claim_specific、cancel、Spawner 成功 / 失敗 / 取消）；整合測試以 headless 伺服器實際呼叫 `agy` 與 `claude` 跑完兩種模式。
+
+---
+
+## 🔭 暫不納入（之後視需要再做）
+* **並行上限**：目前方案 A 每點一次就開一個子程序，大量執行時可能需要每個 Agent 的並行數限制。
+* **stream-json 解析**：改用 `--output-format stream-json` 可顯示工具呼叫等結構化進度，但需要前端另做渲染。
+* **日誌批次寫入**：Agent 輸出量大時，逐行 INSERT + SSE 可改為每 N 毫秒批次處理。
+* **多機 Runner**：目前 API 只監聽 127.0.0.1。

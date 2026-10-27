@@ -13,6 +13,9 @@ export interface Task {
   last_heartbeat_at: string | null;
   attempts: number;
   priority: number;
+  model: string | null;
+  workdir: string | null;
+  auto_approve: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -41,4 +44,19 @@ export interface CreateTaskPayload {
   creator: string;
   assigned_agent?: string | null;
   depends_on_task_id?: string | null;
+}
+
+export interface AgentDef {
+  id: string;
+  label: string;
+  default_model: string;
+  models: string[];
+}
+
+/** 執行設定；欄位省略 = 保留原值，model / workdir 傳空字串 = 清除 */
+export interface RunOptions {
+  agent_id: string;
+  model: string;
+  workdir: string;
+  auto_approve: boolean;
 }
