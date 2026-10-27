@@ -29,6 +29,7 @@
 - [x] **Agent 自我描述規格端點 (`GET /api/spec`)**：提供免 Token 驗證的精簡 Markdown 規格說明書，讓終端 AI 可透過單一 curl 一秒讀懂發派、輪詢、DAG 串接與結果回傳；「接入指南」彈窗首推一鍵複製 AI Prompt。
 - [x] **接入指南極簡化與手冊折疊 (Collapsible API Reference)**：指南只保留「方式一：/api/spec 貼給 AI」與「方式二：MCP 工具」兩大核心方式；下方 API Reference 改為清爽折疊列表，點擊即可展開該端點完整的 curl 範例指令與複製。
 - [x] **一鍵安裝 MCP Server 至 Agent**：在接入指南加入 `⚡ 一鍵加入 Claude` 與 `⚡ 一鍵加入 agy` 按鈕，後端透過 Tauri Command `install_mcp_server` 自動執行 `claude mcp add` / `agy mcp add` 將看板腳本註冊進使用者的 CLI 工具。
+- [x] **執行中即時插話 / 中斷轉向 (Mid-turn Interrupt & Follow-up)**：在任務執行中（running）時抽屜輸入框不再鎖定，使用者隨時可打字發送插話；後端收到時會優雅終止原任務子程序，並帶著累積的 session_id 即時喚醒新任務接續對話，達成隨時插話的效果。
 
 ## 待辦功能（依建議優先序）
 

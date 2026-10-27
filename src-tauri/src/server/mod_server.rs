@@ -326,6 +326,7 @@ pub struct FollowupDto {
 }
 
 /// 追加指示：建立接續原任務工作階段的新任務（排隊中，由前端接著 spawn 或 dispatch）
+/// 若原任務處於 running 狀態，會先優雅中斷原任務子程序，再建立接續的 followup 任務
 async fn followup_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
@@ -334,12 +335,28 @@ async fn followup_task(
     if dto.prompt.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "Prompt is empty".to_string()));
     }
+
+    // 若任務正在執行中，中斷其執行（標記 failed 並 kill 本機子程序）
+    let current_task = TaskService::get_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
+
+    if current_task.status == "running" {
+        let _ = TaskService::cancel_task(&state.pool, &id).await;
+        state.spawner.kill(&id);
+        let _ = state.event_tx.send(BoardEvent {
+            event_type: "task_failed".to_string(),
+            payload: serde_json::json!({ "id": id, "cancelled": true, "interrupted": true }),
+        });
+    }
+
     let task = TaskService::create_followup(&state.pool, &id, &dto.prompt)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((
             StatusCode::CONFLICT,
-            "Task not found, not finished, or has no assigned agent".to_string(),
+            "Task not found or has no assigned agent".to_string(),
         ))?;
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_created".to_string(),

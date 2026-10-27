@@ -40,9 +40,10 @@ watch(
   () => (followup.value = "")
 );
 
-// 已結束、知道是哪個 Agent 才能追加；有工作階段 ID 時會接續同一段對話
+// 有指定 Agent 且處於 running、completed 或 failed 狀態時皆可對話／插話
+const isRunning = computed(() => props.task?.status === "running");
 const canFollowup = computed(
-  () => !!props.task?.assigned_agent && (props.task.status === "completed" || props.task.status === "failed")
+  () => !!props.task?.assigned_agent && (props.task.status === "completed" || props.task.status === "failed" || props.task.status === "running")
 );
 
 // Agent 結尾附的提問：顯示成選項按鈕，點選後當作追加指示送出
@@ -313,14 +314,24 @@ const logLevelClass = (level: string) =>
         <p class="mt-1.5 text-[11px] text-ink-3">也可以在下方「追加指示」自行輸入回答</p>
       </section>
 
-      <!-- Follow-up -->
+      <!-- Follow-up / Interrupt -->
       <section v-if="canFollowup">
-        <h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">追加指示</h4>
-        <div class="rounded-lg border border-line focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)]">
+        <div class="mb-2 flex items-center justify-between">
+          <h4 class="text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+            {{ isRunning ? "即時插話 / 中斷轉向" : "追加指示" }}
+          </h4>
+          <span v-if="isRunning" class="text-[10px] text-amber-500 font-medium animate-pulse flex items-center gap-1">
+            <span>⚡ 執行中：發送將自動終止當前動作並接續對話</span>
+          </span>
+        </div>
+        <div
+          class="rounded-lg border transition-colors"
+          :class="isRunning ? 'border-amber-500/50 focus-within:border-amber-500 focus-within:shadow-[0_0_0_3px_rgba(245,158,11,0.15)] bg-amber-50/20 dark:bg-amber-950/10' : 'border-line focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)]'"
+        >
           <textarea
             v-model="followup"
             rows="2"
-            :placeholder="task.session_id ? '例如：再補上測試（接續同一段對話）' : '例如：再補上測試（這個任務沒有工作階段 ID，會開新對話）'"
+            :placeholder="isRunning ? '例如：停，改為幫我檢查 src/lib.rs（將打斷並接續同一工作階段）' : (task.session_id ? '例如：再補上測試（接續同一段對話）' : '例如：再補上測試（這個任務沒有工作階段 ID，會開新對話）')"
             @keydown.ctrl.enter.prevent="sendFollowup('spawn')"
             @keydown.meta.enter.prevent="sendFollowup('spawn')"
             class="block w-full resize-none bg-transparent px-3 py-2 text-[12px] text-ink placeholder:text-ink-3 focus:outline-none"
@@ -328,7 +339,7 @@ const logLevelClass = (level: string) =>
           <div class="flex items-center justify-end gap-1.5 border-t border-line px-2 py-1.5">
             <span class="mr-auto text-[11px] text-ink-3">@{{ task.assigned_agent }} · {{ task.model ?? "預設模型" }}</span>
             <button
-              v-if="task.session_id"
+              v-if="task.session_id && !isRunning"
               @click="emit('followup', '/compact', 'spawn')"
               title="壓縮這段對話的上下文，之後追加指示會更省 token"
               class="rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-raised"
@@ -336,6 +347,7 @@ const logLevelClass = (level: string) =>
               壓縮對話
             </button>
             <button
+              v-if="!isRunning"
               @click="sendFollowup('dispatch')"
               :disabled="!followup.trim()"
               class="rounded-md px-2 py-1 text-xs font-medium text-ink-2 hover:bg-raised disabled:opacity-40"
@@ -346,10 +358,13 @@ const logLevelClass = (level: string) =>
               @click="sendFollowup('spawn')"
               :disabled="!followup.trim()"
               title="Ctrl+Enter"
-              class="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs font-semibold text-accent-ink hover:opacity-90 disabled:opacity-40"
+              :class="[
+                'flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-40 transition-colors',
+                isRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-accent text-accent-ink hover:opacity-90'
+              ]"
             >
-              <Icon name="play" :size="10" />
-              立即執行
+              <Icon :name="isRunning ? 'refresh' : 'play'" :size="10" />
+              {{ isRunning ? "插話並執行" : "立即執行" }}
             </button>
           </div>
         </div>
