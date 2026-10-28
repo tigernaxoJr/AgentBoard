@@ -17,7 +17,8 @@
 - [x] **Token / 花費統計面板**：`GET /api/stats` 與前端 `StatsModal.vue`（按 Agent、工作目錄、日期）。
 - [x] **任務範本庫 (Task Templates)**：`task_templates` 表、CRUD API、`TemplateModal.vue`，支援任務一鍵存為範本與瀏覽工作目錄。
 - [x] **Worktree 完整 Diff 檢視**：`GET /api/tasks/{id}/worktree/diff` 與抽屜內嵌完整 diff 檢視器。
-- [x] **任務刪除功能**：`DELETE /api/tasks/{id}`，抽屜加入「🗑️ 刪除」按鈕，連帶清理相關日誌與依賴。
+- [x] **任務刪除功能**：`DELETE /api/tasks/{id}`，抽屜加入「🗑️ 刪除」按鈕，連帶清理相關日誌與依賴。刪除尚未完成（非 `completed`）的任務時，下游排隊中的任務會連鎖標記為 `failed`，不會因依賴列被刪而變成無依賴、被直接領取執行。
+- [x] **Runner 可靠性修正**：`complete` / `fail` 回報失敗（連線錯誤或 5xx）時重試最多 5 次（指數退避），避免租約逾時後任務被放回佇列重跑；阻塞式 HTTP 改以 `block_in_place` 呼叫，不佔住 tokio worker 拖慢心跳；取消 / 租約失效時結束整個 process tree（unix 用 process group，Windows 用 `taskkill /T /F`，Spawner 與 Runner 共用 `kill_tree`）。
 - [x] **原生地圖/資料夾選擇彈窗**：整合 `tauri-plugin-dialog`，在建立任務與範本庫可直接彈窗瀏覽選目錄。
 - [x] **模型下拉選單與前置勾選**：建立任務彈窗支援直接勾選已有任務，並依 Agent 自動帶出可用模型下拉選單。
 - [x] **任務快速複製 (Duplicate)**：抽屜一鍵複製當前任務內容並打開建立彈窗。

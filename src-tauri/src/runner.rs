@@ -13,6 +13,7 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 3;
 const HEARTBEAT_SECS: u64 = 15;
 const FLUSH_INTERVAL_MS: u64 = 500;
 const BATCH_LINES: usize = 50;
+const FINISH_RETRIES: u32 = 5;
 
 fn get_default_token_file() -> PathBuf {
     dirs::data_dir()
@@ -62,7 +63,12 @@ impl BoardClient {
         }
     }
 
-    fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, (Option<u16>, String)> {
+    /// ureq 是阻塞式 HTTP；直接在 async 任務裡呼叫會佔住 tokio worker，拖慢心跳
+    async fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, (Option<u16>, String)> {
+        tokio::task::block_in_place(|| self.post_blocking(path, body))
+    }
+
+    fn post_blocking(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, (Option<u16>, String)> {
         let url = format!("{}{}", self.server_url, path);
         let mut req = ureq::post(&url);
         if !self.token.is_empty() {
@@ -84,8 +90,8 @@ impl BoardClient {
         }
     }
 
-    fn claim(&self) -> Option<serde_json::Value> {
-        match self.post("/api/tasks/claim", serde_json::json!({ "agent_id": self.agent_id })) {
+    async fn claim(&self) -> Option<serde_json::Value> {
+        match self.post("/api/tasks/claim", serde_json::json!({ "agent_id": self.agent_id })).await {
             Ok(val) => {
                 if val.is_null() {
                     None
@@ -104,46 +110,66 @@ impl BoardClient {
         }
     }
 
-    fn heartbeat(&self, task_id: &str, lease_id: &str) -> bool {
-        match self.post(&format!("/api/tasks/{task_id}/heartbeat"), serde_json::json!({ "lease_id": lease_id })) {
+    async fn heartbeat(&self, task_id: &str, lease_id: &str) -> bool {
+        match self.post(&format!("/api/tasks/{task_id}/heartbeat"), serde_json::json!({ "lease_id": lease_id })).await {
             Ok(_) => true,
             Err((Some(409), _)) => false, // 409 Conflict = 租約已失效
             Err(_) => true,               // 暫時網路錯誤視為租約尚存
         }
     }
 
-    fn log(&self, task_id: &str, message: &str, level: &str) {
-        let _ = self.post(
-            &format!("/api/tasks/{task_id}/logs"),
-            serde_json::json!({
-                "agent_id": self.agent_id,
-                "level": level,
-                "message": message
-            }),
-        );
+    async fn log(&self, task_id: &str, message: &str, level: &str) {
+        let _ = self
+            .post(
+                &format!("/api/tasks/{task_id}/logs"),
+                serde_json::json!({
+                    "agent_id": self.agent_id,
+                    "level": level,
+                    "message": message
+                }),
+            )
+            .await;
     }
 
-    fn output(&self, task_id: &str, lease_id: &str, lines: &[String]) -> bool {
-        match self.post(
-            &format!("/api/tasks/{task_id}/output"),
-            serde_json::json!({
-                "agent_id": self.agent_id,
-                "lease_id": lease_id,
-                "lines": lines
-            }),
-        ) {
+    async fn output(&self, task_id: &str, lease_id: &str, lines: &[String]) -> bool {
+        match self
+            .post(
+                &format!("/api/tasks/{task_id}/output"),
+                serde_json::json!({
+                    "agent_id": self.agent_id,
+                    "lease_id": lease_id,
+                    "lines": lines
+                }),
+            )
+            .await
+        {
             Ok(_) => true,
             Err((Some(409), _)) => false,
             Err(_) => true,
         }
     }
 
-    fn finish(&self, task_id: &str, lease_id: &str, ok: bool) {
+    /// 回報結果；連線失敗或伺服器錯誤時重試，否則租約逾時後任務會被放回佇列重跑
+    /// 4xx（含租約失效的 409）重試也不會成功，直接放棄
+    async fn finish(&self, task_id: &str, lease_id: &str, ok: bool) {
         let action = if ok { "complete" } else { "fail" };
-        let _ = self.post(
-            &format!("/api/tasks/{task_id}/{action}"),
-            serde_json::json!({ "lease_id": lease_id }),
-        );
+        for attempt in 0..FINISH_RETRIES {
+            let res = self
+                .post(
+                    &format!("/api/tasks/{task_id}/{action}"),
+                    serde_json::json!({ "lease_id": lease_id }),
+                )
+                .await;
+            match res {
+                Ok(_) => return,
+                Err((Some(code), _)) if code < 500 => return,
+                Err((_, e)) => {
+                    eprintln!("[{}] 回報 {action} 失敗（第 {} 次）：{e}", self.agent_id, attempt + 1);
+                    tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                }
+            }
+        }
+        eprintln!("[{}] 無法回報任務 {task_id} 的結果，等待租約逾時後由看板回收", self.agent_id);
     }
 }
 
@@ -169,7 +195,7 @@ pub async fn run_runner(config: RunnerConfig) -> Result<(), Box<dyn std::error::
     println!("[*] 等待領取任務中...\n");
 
     loop {
-        if let Some(task) = client.claim() {
+        if let Some(task) = client.claim().await {
             execute_task(&client, &task, &config).await;
             if config.once {
                 return Ok(());
@@ -197,20 +223,20 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
     println!("Prompt: {prompt}");
     println!("==========================================\n");
 
-    client.log(task_id, &format!("開始執行任務: {title}"), "INFO");
+    client.log(task_id, &format!("開始執行任務: {title}"), "INFO").await;
 
     if config.dry_run {
         println!("[Dry-run] 模擬任務執行中（{} 秒）...", config.dry_run_seconds);
         tokio::time::sleep(Duration::from_secs(config.dry_run_seconds)).await;
-        client.finish(task_id, lease_id, true);
-        client.log(task_id, "任務模擬執行完成！", "INFO");
+        client.finish(task_id, lease_id, true).await;
+        client.log(task_id, "任務模擬執行完成！", "INFO").await;
         return;
     }
 
     let command_arr = task.get("command").and_then(|v| v.as_array());
     let Some(raw_cmd) = command_arr else {
-        client.log(task_id, &format!("不支援的 Agent：{}", config.agent), "ERROR");
-        client.finish(task_id, lease_id, false);
+        client.log(task_id, &format!("不支援的 Agent：{}", config.agent), "ERROR").await;
+        client.finish(task_id, lease_id, false).await;
         return;
     };
 
@@ -219,8 +245,8 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
     if args.is_empty() {
-        client.log(task_id, "空指令無法執行", "ERROR");
-        client.finish(task_id, lease_id, false);
+        client.log(task_id, "空指令無法執行", "ERROR").await;
+        client.finish(task_id, lease_id, false).await;
         return;
     }
 
@@ -238,7 +264,8 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
         task_id,
         &format!("執行：{cmd_display}（工作目錄：{}）", run_dir.unwrap_or(".")),
         "INFO",
-    );
+    )
+    .await;
 
     let mut cmd = Command::new(&args[0]);
     if args.len() > 1 {
@@ -250,14 +277,18 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+    // 獨立的 process group，中止時連同 Agent 開的工具子程序一起結束
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("無法啟動 {}：{e}", args[0]);
             eprintln!("[{}] {msg}", config.agent);
-            client.log(task_id, &msg, "ERROR");
-            client.finish(task_id, lease_id, false);
+            client.log(task_id, &msg, "ERROR").await;
+            client.finish(task_id, lease_id, false).await;
             return;
         }
     };
@@ -302,7 +333,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
         let mut ticker = tokio::time::interval(Duration::from_secs(HEARTBEAT_SECS));
         loop {
             ticker.tick().await;
-            if !client_hb.heartbeat(&t_id, &l_id) {
+            if !client_hb.heartbeat(&t_id, &l_id).await {
                 lease_lost_hb.store(true, Ordering::SeqCst);
                 break;
             }
@@ -328,7 +359,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
                     batch.push(line);
                     if batch.len() >= BATCH_LINES {
                         if !lease_lost_out.load(Ordering::SeqCst) {
-                            if !client_out.output(&t_id_out, &l_id_out, &batch) {
+                            if !client_out.output(&t_id_out, &l_id_out, &batch).await {
                                 lease_lost_out.store(true, Ordering::SeqCst);
                             }
                         }
@@ -338,7 +369,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
                 _ = flush_ticker.tick() => {
                     if !batch.is_empty() {
                         if !lease_lost_out.load(Ordering::SeqCst) {
-                            if !client_out.output(&t_id_out, &l_id_out, &batch) {
+                            if !client_out.output(&t_id_out, &l_id_out, &batch).await {
                                 lease_lost_out.store(true, Ordering::SeqCst);
                             }
                         }
@@ -357,7 +388,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
             }
         }
         if !batch.is_empty() && !lease_lost_out.load(Ordering::SeqCst) {
-            let _ = client_out.output(&t_id_out, &l_id_out, &batch);
+            let _ = client_out.output(&t_id_out, &l_id_out, &batch).await;
         }
     });
 
@@ -369,7 +400,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
             }
             _ = tokio::time::sleep(Duration::from_millis(500)) => {
                 if lease_lost.load(Ordering::SeqCst) {
-                    let _ = child.kill().await;
+                    crate::features::execution::kill_tree(&mut child).await;
                     break None;
                 }
             }
@@ -386,17 +417,17 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
 
     match exit_status.unwrap() {
         Ok(status) if status.success() => {
-            client.finish(task_id, lease_id, true);
-            client.log(task_id, "任務已成功完成！", "INFO");
+            client.finish(task_id, lease_id, true).await;
+            client.log(task_id, "任務已成功完成！", "INFO").await;
         }
         Ok(status) => {
             let code = status.code().unwrap_or(-1);
-            client.finish(task_id, lease_id, false);
-            client.log(task_id, &format!("任務異常退出，代碼: {code}"), "ERROR");
+            client.finish(task_id, lease_id, false).await;
+            client.log(task_id, &format!("任務異常退出，代碼: {code}"), "ERROR").await;
         }
         Err(e) => {
-            client.finish(task_id, lease_id, false);
-            client.log(task_id, &format!("執行過程拋出異常: {e}"), "ERROR");
+            client.finish(task_id, lease_id, false).await;
+            client.log(task_id, &format!("執行過程拋出異常: {e}"), "ERROR").await;
         }
     }
 }

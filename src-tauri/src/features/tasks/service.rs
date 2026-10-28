@@ -557,8 +557,27 @@ impl TaskService {
     }
 
     /// 徹底刪除任務及其相關依賴、日誌與產出記錄
+    /// 尚未完成的任務被刪除時，下游排隊中的任務永遠等不到它，先標記失敗；
+    /// 否則依賴列被刪掉後，下游會變成「無依賴」而被直接領取執行
     pub async fn delete_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
         let mut tx = pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            WITH RECURSIVE downstream(id) AS (
+                SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?1
+                UNION
+                SELECT td.task_id FROM task_dependencies td JOIN downstream d ON td.depends_on_task_id = d.id
+            )
+            UPDATE tasks SET status = 'failed', updated_at = ?2
+            WHERE status = 'queued' AND id IN (SELECT id FROM downstream)
+              AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND status != 'completed')
+            "#,
+        )
+        .bind(task_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await?;
 
         // 刪除關聯資料
         sqlx::query("DELETE FROM task_logs WHERE task_id = ?").bind(task_id).execute(&mut *tx).await?;
@@ -1054,6 +1073,41 @@ mod tests {
         assert_eq!(status(&pool, &b.id).await, "failed");
         assert_eq!(status(&pool, &c.id).await, "failed");
         assert_eq!(status(&pool, &other.id).await, "queued");
+    }
+
+    #[tokio::test]
+    async fn deleting_unfinished_dependency_fails_downstream_instead_of_unblocking_it() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let c = new_task(&pool, "c", Some(&b.id)).await;
+
+        assert!(TaskService::delete_task(&pool, &a.id).await.unwrap());
+        assert_eq!(status(&pool, &b.id).await, "failed");
+        assert_eq!(status(&pool, &c.id).await, "failed");
+        assert!(
+            TaskService::claim_task(&pool, "agy")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_completed_dependency_keeps_downstream_runnable() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let claimed = TaskService::claim_task(&pool, "agy")
+            .await
+            .unwrap()
+            .unwrap();
+        TaskService::complete_task(&pool, &a.id, &claimed.lease_id)
+            .await
+            .unwrap();
+
+        assert!(TaskService::delete_task(&pool, &a.id).await.unwrap());
+        assert_eq!(status(&pool, &b.id).await, "queued");
     }
 
     #[tokio::test]

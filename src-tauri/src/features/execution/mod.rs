@@ -326,11 +326,22 @@ fn agent_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
-async fn kill_tree(child: &mut tokio::process::Child) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // 負的 pid 代表整個 process group
         unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        // /T 連同子孫程序一起結束；CREATE_NO_WINDOW 避免閃出主控台視窗
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
     }
     let _ = child.kill().await;
 }
