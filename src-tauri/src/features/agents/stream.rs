@@ -117,13 +117,20 @@ pub fn parse_line(line: &str) -> Vec<Parsed> {
         }
         (_, Some("result")) => {
             let r = v.get("result").cloned().unwrap_or_default();
-            let text = s(&r, "response").unwrap_or_default().trim_end().to_string();
+            // 失敗時 agy 的 response 為空，原因放在 error 欄位
+            let text = s(&r, "response")
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| s(&r, "error"))
+                .unwrap_or_default()
+                .trim_end()
+                .to_string();
             let result = RunResult {
                 text: text.clone(),
                 is_error: s(&r, "status").as_deref() != Some("SUCCESS"),
                 ..Default::default()
             };
             let mut out: Vec<_> = s(&r, "conversation_id")
+                .filter(|id| !id.is_empty())
                 .map(Parsed::Session)
                 .into_iter()
                 .collect();
@@ -290,6 +297,23 @@ mod tests {
                 Parsed::Log("INFO", "OK".into()),
                 Parsed::Result(RunResult {
                     text: "OK".into(),
+                    ..Default::default()
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn agy_error_uses_error_field_and_keeps_session() {
+        // 實際從 agy 擷取：--model 無效時 response 為空、原因在 error，conversation_id 為空字串
+        let line = r#"{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"invalid model"}}"#;
+        assert_eq!(
+            parse_line(line),
+            vec![
+                Parsed::Log("INFO", "invalid model".into()),
+                Parsed::Result(RunResult {
+                    text: "invalid model".into(),
+                    is_error: true,
                     ..Default::default()
                 })
             ]

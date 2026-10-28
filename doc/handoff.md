@@ -114,3 +114,5 @@ VITE_API_TOKEN="$(cat /path/to/api_token)" pnpm dev   # http://localhost:1420
 - 端對端驗證過的流程：claude / agy 的 spawn 與 Runner 派發、worktree 隔離、追加指示接續工作階段、`{{dep.result}}` 串接、搜尋、從頭重試。
 - agy 的 `-p` 會把下一個參數當 prompt，所有 flag 必須放在 `-p` 前面（`features/agents/mod.rs` 的 `command_for`）。
 - agy 的 result 事件裡的 usage / duration 是整段對話的累計，用量改由每個完成步驟加總（`features/agents/stream.rs`）。
+- agy 的 result 事件 `status` 只有 `SUCCESS` / `ERROR`（用真的 agy 驗證過，`--model` 傳無效值可重現）；失敗時 `response` 是空的、原因在 `error` 欄位，且 `conversation_id` 為空字串，所以 `stream.rs` 失敗時改用 `error` 當結果文字、並略過空的 session id（否則失敗原因是空白、還會洗掉任務原本的 session）。
+- 端對端回歸測試：`node scripts/e2e/e2e.mjs`（約 1 分鐘）。自動建置 server / CLI、用 `scripts/e2e/fake-agent.rs` 編出假的 `agy` / `claude`，起真的 server 與 Runner 跑 30 個情境（失敗原因、is_error、依賴連鎖失敗、租約逾時與退避、斷線重連保留輸出、程序樹終止、訊息收件匣、MCP 等）。需要 cargo 與 rustc，不需要真的 Agent；暫存檔在 `src-tauri/target/e2e/`。改動 Runner、租約或 stream 解析後請跑一次。

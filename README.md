@@ -86,6 +86,14 @@ agent-board runner --agent agy --interval 3
 
 ---
 
+## 🧪 端對端測試
+
+```bash
+node scripts/e2e/e2e.mjs
+```
+
+用假的 Agent 起真的 server 與 Runner，驗證任務生命週期、失敗與重試、斷線恢復等 30 個情境（需要 cargo 與 rustc，不需要真的 claude / agy）。
+
 ## 🧩 範本、統計與 Diff API
 
 | 路徑 | 說明 |
