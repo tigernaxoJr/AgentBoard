@@ -24,6 +24,7 @@ async fn test_stats_and_templates_lifecycle() {
             isolate: Some(false),
             session_id: None,
             priority: None,
+            ..Default::default()
         },
     )
     .await

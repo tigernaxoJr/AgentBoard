@@ -36,6 +36,9 @@ const {
   selectTask,
   agents,
   runners,
+  pausedAgents,
+  resumeAgent,
+  approveTask,
   spawnTask,
   dispatchTask,
   cancelTask,
@@ -139,6 +142,24 @@ const handleFollowup = async (prompt: string, mode: RunMode) => {
     await followupTask(task.id, prompt, mode);
   } catch (err: any) {
     alert("追加指示失敗: " + err.message);
+  }
+};
+
+const handleApprove = async () => {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    await approveTask(task.id);
+  } catch (err: any) {
+    alert("核准失敗: " + err.message);
+  }
+};
+
+const handleResumeAgent = async (agentId: string) => {
+  try {
+    await resumeAgent(agentId);
+  } catch (err: any) {
+    alert("恢復失敗: " + err.message);
   }
 };
 
@@ -359,6 +380,14 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
             <span v-else class="ml-auto text-[11px] text-ink-3">
               {{ !r.status ? "未連線" : r.status.online ? "閒置" : "離線" }}
             </span>
+            <button
+              v-if="pausedAgents.includes(r.id)"
+              @click="handleResumeAgent(r.id)"
+              class="rounded bg-rose-500/10 px-1.5 text-[11px] font-medium text-rose-600 hover:bg-rose-500/20 dark:text-rose-400"
+              title="連續失敗，已暫停領取新任務；排除問題後按此恢復"
+            >
+              已暫停・恢復
+            </button>
           </div>
         </div>
 
@@ -571,6 +600,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           @merge-worktree="handleMergeWorktree"
           @discard-worktree="handleDiscardWorktree"
           @cancel="handleCancel"
+          @approve="handleApprove"
           @delete="handleDeleteTask"
           @duplicate="handleDuplicateTask"
           @save-template="handleSaveTaskAsTemplate"

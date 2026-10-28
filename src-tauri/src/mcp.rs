@@ -160,7 +160,7 @@ fn slim_task(mut val: serde_json::Value, max_chars: usize) -> serde_json::Value 
 pub struct ListTasksParams {
     /// 搜尋標題/Prompt/ID/結果
     pub query: Option<String>,
-    /// 狀態過濾: queued, running, completed, failed
+    /// 狀態過濾: pending_approval, queued, running, completed, failed
     pub status: Option<String>,
     /// 最多回傳幾筆，預設 10
     pub limit: Option<usize>,
@@ -210,6 +210,8 @@ pub struct CreateTaskParams {
     pub auto_approve: Option<bool>,
     /// 用獨立 git worktree 隔離
     pub isolate: Option<bool>,
+    /// true = 任務先等人類在看板核准才會排入佇列（建議：由 Agent 再派發、會產生副作用的任務）
+    pub requires_approval: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

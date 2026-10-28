@@ -274,6 +274,40 @@ const requeued = await waitFor(bt.id, (x) => x.status === "queued", 15000);
 check("T10 lease timeout requeues with not_before", requeued.status === "queued" && !!requeued.not_before, `${requeued.status} not_before=${requeued.not_before}`);
 const claim2 = await api("POST", "/api/tasks/claim", { agent_id: "agy" });
 check("T10 immediate reclaim is held back by backoff", claim2.json === null, JSON.stringify(claim2.json)?.slice(0, 80));
+
+// approval gate: held in pending_approval until a human approves
+const gated = (await api("POST", "/api/tasks", { title: "gated", prompt: "x", assigned_agent: "zed", requires_approval: true })).json;
+check("D1 requires_approval starts pending_approval", gated.status === "pending_approval", gated.status);
+const gClaim = await api("POST", "/api/tasks/claim", { agent_id: "zed" });
+check("D1 pending_approval cannot be claimed", gClaim.json === null, JSON.stringify(gClaim.json)?.slice(0, 80));
+await api("POST", `/api/tasks/${gated.id}/approve`);
+const gClaim2 = await api("POST", "/api/tasks/claim", { agent_id: "zed" });
+check("D1 approved task can be claimed", gClaim2.json?.id === gated.id, JSON.stringify(gClaim2.json)?.slice(0, 80));
+
+// depth limit: an agent chaining tasks from inside its own running task is cut off
+let parent = gClaim2.json;
+let depthRejected = null;
+for (let i = 0; i < 8; i++) {
+  const child = await api("POST", "/api/tasks", { title: `d${i}`, prompt: "x", assigned_agent: "zed", creator: "zed" });
+  if (child.status !== 201) { depthRejected = child; break; }
+  parent = (await api("POST", "/api/tasks/claim", { agent_id: "zed" })).json;
+}
+check("D2 depth limit rejects runaway chains", depthRejected?.status === 422, `status=${depthRejected?.status}`);
+
+// pause: three failures in a row stop the agent from claiming until resumed
+await api("POST", `/api/tasks/${parent.id}/fail`, { lease_id: parent.lease_id });
+for (let i = 0; i < 3; i++) {
+  await api("POST", "/api/tasks", { title: `f${i}`, prompt: "x", assigned_agent: "pau" });
+  const c = (await api("POST", "/api/tasks/claim", { agent_id: "pau" })).json;
+  await api("POST", `/api/tasks/${c.id}/fail`, { lease_id: c.lease_id });
+}
+await api("POST", "/api/tasks", { title: "after", prompt: "x", assigned_agent: "pau" });
+const paused = (await api("GET", "/api/agents/paused")).json;
+const pClaim = await api("POST", "/api/tasks/claim", { agent_id: "pau" });
+check("D3 agent is paused after 3 failures", paused.includes("pau") && pClaim.json === null, `paused=${paused} claim=${JSON.stringify(pClaim.json)?.slice(0, 60)}`);
+await api("POST", "/api/agents/pau/resume");
+const rClaim = await api("POST", "/api/tasks/claim", { agent_id: "pau" });
+check("D3 resume lets the agent claim again", !!rClaim.json?.id, JSON.stringify(rClaim.json)?.slice(0, 80));
 killProc(server);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);

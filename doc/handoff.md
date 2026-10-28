@@ -41,6 +41,7 @@
 - [x] **一鍵安裝 MCP Server 至 Agent**：在接入指南加入 `⚡ 一鍵加入 Claude` 與 `⚡ 一鍵加入 agy` 按鈕，後端透過 Tauri Command `install_mcp_server` 自動執行 `claude mcp add` / `agy mcp add` 將看板註冊進使用者的 CLI 工具。
 - [x] **原生 Rust 兼當 MCP Server (`agent-board mcp`)**：採用官方 `rmcp` 3.8.0 實作 MCP stdio 協定，直接以執行檔自身（如 `agent-board.exe mcp`）提供 stdio 服務，無需外部 Python 依賴。內建 13 個 MCP 工具轉發至本地 `:18833`，若 Agent Board 尚未啟動會友善回傳提示，桌面端一鍵安裝與複製指令全面改為原生子命令。
 - [x] **Runner 並行與插話競態**：`agent-board runner --concurrency N` 以 semaphore 限制並行數（先佔位再領取，滿載不會多領）；`--once` 會等進行中的任務全結束才退出。對 Runner 執行中的任務追加指示時，接續任務以 `not_before` 延後 20 秒，避免與尚未被中止的舊程序同時寫同一個 worktree / session。e2e 情境 C1、C2 涵蓋。
+- [x] **失控防護與人類審批**（借鑑 munder-difflin 的 supervisor / circuit breaker）：`tasks.depth`（migration 2）限制 Agent 互相派發的層數（5）；同一 Agent 連續 3 次失敗暫停領取，側邊欄 Runners 可手動恢復（`agent_resume` 表）；`requires_approval` 任務進入 `pending_approval`，在看板核准才排入佇列。深度是依 `creator` 字串對應執行中任務推算，建立者名稱必須等於 Agent id（如 `agy`）才會累計；暫停只擋 Runner 的 `claim`，面板的立即執行（spawn）不受影響。e2e 情境 D1–D3 涵蓋。
 - [x] **執行中即時插話 / 中斷轉向 (Mid-turn Interrupt & Follow-up)**：在任務執行中（running）時抽屜輸入框不再鎖定，使用者隨時可打字發送插話；後端收到時會優雅終止原任務子程序，並帶著累積的 session_id 即時喚醒新任務接續對話，達成隨時插話的效果。
 
 ## 待辦功能（依建議優先序）
@@ -116,4 +117,4 @@ VITE_API_TOKEN="$(cat /path/to/api_token)" pnpm dev   # http://localhost:1420
 - agy 的 `-p` 會把下一個參數當 prompt，所有 flag 必須放在 `-p` 前面（`features/agents/mod.rs` 的 `command_for`）。
 - agy 的 result 事件裡的 usage / duration 是整段對話的累計，用量改由每個完成步驟加總（`features/agents/stream.rs`）。
 - agy 的 result 事件 `status` 只有 `SUCCESS` / `ERROR`（用真的 agy 驗證過，`--model` 傳無效值可重現）；失敗時 `response` 是空的、原因在 `error` 欄位，且 `conversation_id` 為空字串，所以 `stream.rs` 失敗時改用 `error` 當結果文字、並略過空的 session id（否則失敗原因是空白、還會洗掉任務原本的 session）。
-- 端對端回歸測試：`node scripts/e2e/e2e.mjs`（約 1 分鐘）。自動建置 server / CLI、用 `scripts/e2e/fake-agent.rs` 編出假的 `agy` / `claude`，起真的 server 與 Runner 跑 30 個情境（失敗原因、is_error、依賴連鎖失敗、租約逾時與退避、斷線重連保留輸出、程序樹終止、訊息收件匣、MCP 等）。需要 cargo 與 rustc，不需要真的 Agent；暫存檔在 `src-tauri/target/e2e/`。改動 Runner、租約或 stream 解析後請跑一次。
+- 端對端回歸測試：`node scripts/e2e/e2e.mjs`（約 1 分鐘）。自動建置 server / CLI、用 `scripts/e2e/fake-agent.rs` 編出假的 `agy` / `claude`，起真的 server 與 Runner 跑 39 個檢查（失敗原因、is_error、依賴連鎖失敗、租約逾時與退避、斷線重連保留輸出、程序樹終止、訊息收件匣、MCP 等）。需要 cargo 與 rustc，不需要真的 Agent；暫存檔在 `src-tauri/target/e2e/`。改動 Runner、租約或 stream 解析後請跑一次。

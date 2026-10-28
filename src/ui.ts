@@ -1,6 +1,13 @@
 import type { TaskStatus } from "./types";
 
 export const STATUS_META: Record<TaskStatus, { label: string; en: string; dot: string; text: string; soft: string }> = {
+  pending_approval: {
+    label: "待核准",
+    en: "Pending approval",
+    dot: "bg-violet-500",
+    text: "text-violet-600 dark:text-violet-400",
+    soft: "bg-violet-500/10 text-violet-700 dark:text-violet-300 ring-violet-500/25",
+  },
   queued: {
     label: "待領取",
     en: "Queued",

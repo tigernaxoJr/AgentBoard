@@ -23,6 +23,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             isolate: Some(false),
             session_id: None,
             priority: None,
+            ..Default::default()
         },
     )
     .await
@@ -42,6 +43,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             isolate: Some(false),
             session_id: None,
             priority: None,
+            ..Default::default()
         },
     )
     .await
@@ -62,6 +64,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             isolate: Some(false),
             session_id: None,
             priority: None,
+            ..Default::default()
         },
     )
     .await

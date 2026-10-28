@@ -77,6 +77,7 @@ const copyPrompt = async () => {
       <span class="flex items-center gap-1.5">
         <span class="font-mono text-ink-3">#{{ task.id.slice(0, 8) }}</span>
         <span v-if="task.status === 'queued' && task.priority > 0" class="rounded bg-accent-soft px-1 font-medium text-accent" title="已派發，Agent 下次輪詢會優先領取">優先</span>
+        <span v-if="task.status === 'pending_approval'" class="rounded bg-violet-500/10 px-1 font-medium text-violet-700 dark:text-violet-300" title="Agent 建立的任務，需人類核准才會排入佇列">待核准</span>
         <span v-if="task.attempts > 1" class="text-amber-600 dark:text-amber-400" title="逾時重試次數">重試 {{ task.attempts - 1 }}</span>
       </span>
       <span :class="['inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium ring-1 ring-inset', agentMeta(task.assigned_agent).chip]">

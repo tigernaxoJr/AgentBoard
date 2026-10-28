@@ -182,6 +182,9 @@ const MIGRATIONS: &[&str] = &[
     // 1：失敗原因，與逾時重試的最早可領取時間（退避用）
     "ALTER TABLE tasks ADD COLUMN error TEXT;
      ALTER TABLE tasks ADD COLUMN not_before TEXT;",
+    // 2：派發深度（Agent 再派發 Agent 的層數），與連續失敗暫停後的恢復時間
+    "ALTER TABLE tasks ADD COLUMN depth INTEGER NOT NULL DEFAULT 0;
+     CREATE TABLE IF NOT EXISTS agent_resume (agent_id TEXT PRIMARY KEY, resumed_at TEXT NOT NULL);",
 ];
 
 async fn apply_versioned_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {

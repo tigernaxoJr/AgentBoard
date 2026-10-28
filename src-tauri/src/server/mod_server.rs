@@ -6,7 +6,7 @@ use crate::features::messages::{DEFAULT_MESSAGE_LIMIT, MessageService, SendMessa
 use crate::features::runners::Runners;
 use crate::features::stats::{StatsQuery, StatsService};
 use crate::features::tasks::{
-    AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, RequeueResult, RunOptions, TaskService,
+    AddTaskLogDto, ClaimTaskDto, CreateTaskDto, LeaseDto, MAX_DEPTH, RequeueResult, RunOptions, TaskService,
 };
 use crate::features::templates::{CreateTemplateDto, TemplateService, UpdateTemplateDto};
 use crate::features::worktree;
@@ -68,6 +68,9 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/tasks/{id}/dispatch", post(dispatch_task))
         .route("/api/tasks/{id}/spawn", post(spawn_task))
         .route("/api/tasks/{id}/cancel", post(cancel_task))
+        .route("/api/tasks/{id}/approve", post(approve_task))
+        .route("/api/agents/paused", get(paused_agents))
+        .route("/api/agents/{id}/resume", post(resume_agent))
         .route("/api/tasks/{id}/requeue", post(requeue_task))
         .route("/api/tasks/{id}/followup", post(followup_task))
         .route("/api/tasks/{id}/worktree", get(worktree_status))
@@ -123,8 +126,18 @@ pub fn create_router(state: ServerState) -> Router {
 // Handlers
 async fn create_task(
     State(state): State<ServerState>,
-    Json(dto): Json<CreateTaskDto>,
+    Json(mut dto): Json<CreateTaskDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let creator = dto.creator.as_deref().unwrap_or("human");
+    dto.depth = TaskService::derived_depth(&state.pool, creator)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if dto.depth > MAX_DEPTH {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("派發深度超過上限 {MAX_DEPTH}：Agent 再派發 Agent 的層數太多，疑似互相派發的迴圈"),
+        ));
+    }
     let task = TaskService::create_task(&state.pool, dto)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -310,6 +323,49 @@ async fn cancel_task(
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_failed".to_string(),
         payload: serde_json::json!({ "id": id, "cancelled": true }),
+    });
+    Ok(StatusCode::OK)
+}
+
+async fn approve_task(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let approved = TaskService::approve_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !approved {
+        return Err((
+            StatusCode::CONFLICT,
+            "Task not found or not pending approval".to_string(),
+        ));
+    }
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "task_approved".to_string(),
+        payload: serde_json::json!({ "id": id }),
+    });
+    Ok(StatusCode::OK)
+}
+
+async fn paused_agents(
+    State(state): State<ServerState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    TaskService::paused_agents(&state.pool)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn resume_agent(
+    State(state): State<ServerState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    TaskService::resume_agent(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = state.event_tx.send(BoardEvent {
+        event_type: "agent_resumed".to_string(),
+        payload: serde_json::json!({ "agent_id": id }),
     });
     Ok(StatusCode::OK)
 }
@@ -913,7 +969,10 @@ Auth Header: Authorization: Bearer <API_TOKEN>
 
 5. Other Useful Endpoints:
    - GET /api/tasks : List all tasks (optional query ?q=keyword)
-   - POST /api/tasks/{id}/cancel : Cancel a queued or running task
+   - POST /api/tasks/{id}/cancel : Cancel a queued, running or pending_approval task
+   - Set "requires_approval": true when creating a task to hold it in "pending_approval" until a human approves it on the board (POST /api/tasks/{id}/approve)
+   - Tasks created by an agent while it is running another task get depth+1; creation is rejected (422) beyond depth 5, to stop agents dispatching to each other in a loop
+   - An agent whose last 3 executed tasks all failed stops claiming new tasks until a human resumes it (GET /api/agents/paused, POST /api/agents/{id}/resume)
    - POST /api/messages {sender, receiver, payload, task_id?} : Send a message to another agent (receiver "*" = broadcast to everyone else)
    - GET /api/messages?receiver=<your id>&unread=true : Read your inbox; then POST /api/messages/read {reader, ids?} to mark read
    - GET /api/agents : List registered local agents and available models

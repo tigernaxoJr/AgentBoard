@@ -21,6 +21,11 @@ pub struct CreateTaskDto {
     pub session_id: Option<String>,
     /// 領取優先序，越大越先被領取（預設 0）
     pub priority: Option<i64>,
+    /// true = 建立後先進入 pending_approval，由人類在看板核准才會排入佇列
+    pub requires_approval: Option<bool>,
+    /// 由伺服器依建立者目前執行中的任務推算，不接受外部傳入
+    #[serde(skip)]
+    pub depth: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +164,10 @@ pub struct RecoveryResult {
 pub const MAX_ATTEMPTS: i64 = 3;
 /// 逾時後重新排隊的退避：第 n 次嘗試後等 n * 這麼多秒才能被再次領取
 pub const RETRY_BACKOFF_SECS: i64 = 30;
+/// Agent 派發 Agent 的最大層數，超過即拒絕建立
+pub const MAX_DEPTH: i64 = 5;
+/// 同一個 Agent 連續失敗這麼多次後，Runner 暫停領取，直到人類恢復
+pub const PAUSE_AFTER_FAILURES: i64 = 3;
 /// 失敗原因的字數上限
 const MAX_ERROR_CHARS: usize = 500;
 
@@ -214,13 +223,17 @@ impl TaskService {
         task.isolate = dto.isolate.unwrap_or(false);
         task.session_id = dto.session_id.filter(|s| !s.is_empty());
         task.priority = dto.priority.unwrap_or(0);
+        task.depth = dto.depth;
+        if dto.requires_approval.unwrap_or(false) {
+            task.status = "pending_approval".to_string();
+        }
 
         // 任務與依賴同一個交易：依賴 ID 不存在（FK 失敗）時整筆回滾，避免產生「無依賴」的任務被直接執行
         let mut tx = pool.begin().await?;
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, session_id, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, session_id, priority, depth, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -236,6 +249,7 @@ impl TaskService {
         .bind(task.isolate)
         .bind(&task.session_id)
         .bind(task.priority)
+        .bind(task.depth)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(&mut *tx)
@@ -253,6 +267,79 @@ impl TaskService {
         tx.commit().await?;
 
         Ok(task)
+    }
+
+    /// 新任務的派發深度：建立者是某個 Agent 時，等於它目前執行中任務的最大深度 + 1；
+    /// 其他情況（人類、沒有執行中任務）為 0
+    pub async fn derived_depth(pool: &Pool<Sqlite>, creator: &str) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(MAX(depth) + 1, 0) FROM tasks WHERE status = 'running' AND assigned_agent = ?",
+        )
+        .bind(creator)
+        .fetch_one(pool)
+        .await
+    }
+
+    /// 核准待核准的任務，排入佇列
+    pub async fn approve_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
+        let rows = sqlx::query(
+            "UPDATE tasks SET status = 'queued', updated_at = ? WHERE id = ? AND status = 'pending_approval'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(task_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(rows > 0)
+    }
+
+    /// 最近 PAUSE_AFTER_FAILURES 筆實際執行過的任務（恢復時間之後）全部失敗 = 暫停領取
+    /// 取消與連鎖失敗（從未被領取）不算
+    pub async fn is_agent_paused(pool: &Pool<Sqlite>, agent_id: &str) -> Result<bool, sqlx::Error> {
+        let failed: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM (
+                SELECT status FROM tasks
+                WHERE assigned_agent = ?1 AND status IN ('completed', 'failed') AND attempts > 0
+                  AND COALESCE(error, '') != '已取消'
+                  AND updated_at > COALESCE((SELECT resumed_at FROM agent_resume WHERE agent_id = ?1), '')
+                ORDER BY updated_at DESC LIMIT ?2
+            ) WHERE status = 'failed'
+            "#,
+        )
+        .bind(agent_id)
+        .bind(PAUSE_AFTER_FAILURES)
+        .fetch_one(pool)
+        .await?;
+        Ok(failed >= PAUSE_AFTER_FAILURES)
+    }
+
+    pub async fn paused_agents(pool: &Pool<Sqlite>) -> Result<Vec<String>, sqlx::Error> {
+        let agents: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT assigned_agent FROM tasks WHERE assigned_agent IS NOT NULL",
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut paused = Vec::new();
+        for agent in agents {
+            if Self::is_agent_paused(pool, &agent).await? {
+                paused.push(agent);
+            }
+        }
+        Ok(paused)
+    }
+
+    /// 人類恢復被暫停的 Agent：之後的失敗重新計數
+    pub async fn resume_agent(pool: &Pool<Sqlite>, agent_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO agent_resume (agent_id, resumed_at) VALUES (?1, ?2) \
+             ON CONFLICT(agent_id) DO UPDATE SET resumed_at = ?2",
+        )
+        .bind(agent_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     async fn populate_dependencies(
@@ -299,7 +386,7 @@ impl TaskService {
         } else {
             r#"
             SELECT * FROM tasks
-            WHERE status IN ('queued', 'running')
+            WHERE status IN ('queued', 'running', 'pending_approval')
                OR id IN (
                  SELECT id FROM tasks WHERE status IN ('completed', 'failed')
                  ORDER BY updated_at DESC LIMIT ?1
@@ -342,6 +429,9 @@ impl TaskService {
         pool: &Pool<Sqlite>,
         agent_id: &str,
     ) -> Result<Option<ClaimedTask>, sqlx::Error> {
+        if Self::is_agent_paused(pool, agent_id).await? {
+            return Ok(None);
+        }
         let now = Utc::now().to_rfc3339();
         let lease_id = uuid::Uuid::new_v4().to_string();
 
@@ -558,7 +648,7 @@ impl TaskService {
     pub async fn cancel_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
-            "UPDATE tasks SET status = 'failed', lease_id = NULL, error = '已取消', updated_at = ? WHERE id = ? AND status IN ('queued', 'running')"
+            "UPDATE tasks SET status = 'failed', lease_id = NULL, error = '已取消', updated_at = ? WHERE id = ? AND status IN ('queued', 'running', 'pending_approval')"
         )
         .bind(&now)
         .bind(task_id)
@@ -586,7 +676,7 @@ impl TaskService {
                 SELECT td.task_id FROM task_dependencies td JOIN downstream d ON td.depends_on_task_id = d.id
             )
             UPDATE tasks SET status = 'failed', error = '前置任務已被刪除', updated_at = ?2
-            WHERE status = 'queued' AND id IN (SELECT id FROM downstream)
+            WHERE status IN ('queued', 'pending_approval') AND id IN (SELECT id FROM downstream)
               AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND status != 'completed')
             "#,
         )
@@ -736,9 +826,9 @@ impl TaskService {
         let task: Option<Task> = sqlx::query_as(
             r#"
             INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, parent_task_id, model, workdir, auto_approve, isolate,
-                               worktree_path, branch, base_commit, session_id, created_at, updated_at)
+                               worktree_path, branch, base_commit, session_id, depth, created_at, updated_at)
             SELECT ?1, CASE WHEN title LIKE '↳ %' THEN title ELSE '↳ ' || title END, ?2, 'queued', assigned_agent, 'human', id,
-                   model, workdir, auto_approve, isolate, worktree_path, branch, base_commit, session_id, ?3, ?3
+                   model, workdir, auto_approve, isolate, worktree_path, branch, base_commit, session_id, depth, ?3, ?3
             FROM tasks
             WHERE id = ?4 AND status IN ('completed', 'failed') AND assigned_agent IS NOT NULL
             RETURNING *
@@ -893,7 +983,7 @@ impl TaskService {
             let rows = sqlx::query(
                 r#"
                 UPDATE tasks SET status = 'failed', error = '前置任務失敗', updated_at = ?
-                WHERE status = 'queued'
+                WHERE status IN ('queued', 'pending_approval')
                   AND id IN (
                     SELECT td.task_id FROM task_dependencies td
                     JOIN tasks dep ON dep.id = td.depends_on_task_id
@@ -1286,6 +1376,104 @@ mod tests {
             .await
             .unwrap();
         assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn approval_task_waits_until_approved() {
+        let pool = memory_pool().await;
+        let t = TaskService::create_task(
+            &pool,
+            CreateTaskDto {
+                title: "gated".into(),
+                prompt: "p".into(),
+                requires_approval: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(t.status, "pending_approval");
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+        assert!(TaskService::list_tasks(&pool, None).await.unwrap().iter().any(|x| x.id == t.id));
+
+        assert!(TaskService::approve_task(&pool, &t.id).await.unwrap());
+        assert!(!TaskService::approve_task(&pool, &t.id).await.unwrap());
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn pending_approval_task_can_be_cancelled() {
+        let pool = memory_pool().await;
+        let t = TaskService::create_task(
+            &pool,
+            CreateTaskDto {
+                title: "gated".into(),
+                prompt: "p".into(),
+                requires_approval: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(TaskService::cancel_task(&pool, &t.id).await.unwrap());
+        assert_eq!(status(&pool, &t.id).await, "failed");
+    }
+
+    #[tokio::test]
+    async fn depth_grows_with_agent_created_tasks() {
+        let pool = memory_pool().await;
+        assert_eq!(TaskService::derived_depth(&pool, "human").await.unwrap(), 0);
+        assert_eq!(TaskService::derived_depth(&pool, "agy").await.unwrap(), 0);
+
+        let a = new_task(&pool, "a", None).await;
+        TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        // agy 正在執行深度 0 的任務，它建立的任務深度為 1
+        assert_eq!(TaskService::derived_depth(&pool, "agy").await.unwrap(), 1);
+        sqlx::query("UPDATE tasks SET depth = 4 WHERE id = ?")
+            .bind(&a.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(TaskService::derived_depth(&pool, "agy").await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn agent_pauses_after_consecutive_failures_until_resumed() {
+        let pool = memory_pool().await;
+        for i in 0..PAUSE_AFTER_FAILURES {
+            new_task(&pool, &format!("t{i}"), None).await;
+            let c = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            TaskService::fail_task_with_reason(&pool, &c.task.id, &c.lease_id, Some("boom"))
+                .await
+                .unwrap();
+        }
+        assert!(TaskService::is_agent_paused(&pool, "agy").await.unwrap());
+        assert_eq!(TaskService::paused_agents(&pool).await.unwrap(), ["agy"]);
+        assert!(!TaskService::is_agent_paused(&pool, "claude").await.unwrap());
+
+        new_task(&pool, "later", None).await;
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+
+        TaskService::resume_agent(&pool, "agy").await.unwrap();
+        assert!(!TaskService::is_agent_paused(&pool, "agy").await.unwrap());
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn success_or_cancel_does_not_count_toward_pause() {
+        let pool = memory_pool().await;
+        for i in 0..PAUSE_AFTER_FAILURES {
+            new_task(&pool, &format!("t{i}"), None).await;
+            let c = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            if i == 1 {
+                TaskService::complete_task(&pool, &c.task.id, &c.lease_id).await.unwrap();
+            } else {
+                TaskService::fail_task_with_reason(&pool, &c.task.id, &c.lease_id, Some("boom"))
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(!TaskService::is_agent_paused(&pool, "agy").await.unwrap());
     }
 
     #[tokio::test]

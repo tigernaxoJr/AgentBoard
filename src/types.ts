@@ -1,4 +1,4 @@
-export type TaskStatus = "queued" | "running" | "completed" | "failed";
+export type TaskStatus = "pending_approval" | "queued" | "running" | "completed" | "failed";
 
 export type SupportedAgent = "claude" | "agy" | "all";
 
@@ -31,6 +31,8 @@ export interface Task {
   error: string | null;
   /** 逾時重試的退避：在這個時間之前不會被領取 */
   not_before: string | null;
+  /** Agent 再派發 Agent 的層數 */
+  depth: number;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +66,8 @@ export interface CreateTaskPayload {
   auto_approve?: boolean;
   isolate?: boolean;
   session_id?: string | null;
+  /** true = 先等人類核准才排入佇列 */
+  requires_approval?: boolean;
 }
 
 export interface CliSession {

@@ -21,6 +21,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "cancel"): void;
+  (e: "approve"): void;
   (e: "delete"): void;
   (e: "duplicate"): void;
   (e: "save-template"): void;
@@ -167,7 +168,15 @@ const logLevelClass = (level: string) =>
           <span>存為範本</span>
         </button>
         <button
-          v-if="task.status === 'queued' || task.status === 'running'"
+          v-if="task.status === 'pending_approval'"
+          @click="emit('approve')"
+          title="核准後任務才會排入佇列"
+          class="h-7 rounded-md bg-violet-500/10 px-2 text-xs font-medium text-violet-700 hover:bg-violet-500/20 dark:text-violet-300"
+        >
+          核准
+        </button>
+        <button
+          v-if="task.status === 'queued' || task.status === 'running' || task.status === 'pending_approval'"
           @click="emit('cancel')"
           title="取消任務（執行中的 Agent 會被中止）"
           class="h-7 rounded-md px-2 text-xs font-medium text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"

@@ -48,6 +48,8 @@ pub struct Task {
     pub error: Option<String>,
     /// 逾時重試的退避：在這個時間之前不會被領取
     pub not_before: Option<String>,
+    /// Agent 再派發 Agent 的層數（人類建立 = 0），超過上限即拒絕建立，避免互相派發的無限迴圈
+    pub depth: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,6 +90,7 @@ impl Task {
             duration_ms: None,
             error: None,
             not_before: None,
+            depth: 0,
             created_at: now.clone(),
             updated_at: now,
         }

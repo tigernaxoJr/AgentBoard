@@ -119,12 +119,13 @@ Agent Board 執行檔本身即可兼當原生 MCP 伺服端（`agent-board mcp`�
 ### 支援工具清單
 * `list_tasks`：搜尋/檢視任務清單
 * `get_task`：取得任務詳情、結果、日誌與 Token
-* `create_task`：建立新任務（支援 model, workdir, dependency_ids（多重依賴）, isolate 等）
+* `create_task`：建立新任務（支援 model, workdir, dependency_ids（多重依賴）, isolate, requires_approval 等；`requires_approval: true` 的任務先停在「待核准」，要人類在看板核准才會排入佇列。Agent 在執行任務時建立的任務會累計派發深度，超過 5 層即拒絕，避免互相派發的迴圈）
 * `spawn_task`：由看板立即啟動子程序執行
 * `dispatch_task`：排入待辦派工給 Runner
 * `followup_task`：追加後續指示（接續 session）
   * Agent 若在結果結尾附上 ```` ```ask ```` 區塊（問題與選項），UI 會顯示成按鈕供點選回答；任務詳情也有「壓縮對話」（`/compact`）按鈕
 * `requeue_task` / `cancel_task`：重試或取消
+  * 同一個 Agent 連續 3 次實際執行都失敗時，Runner 會暫停領取新任務（側邊欄 Runners 顯示「已暫停・恢復」，排除問題後按一下恢復；取消與連鎖失敗不計入）
 * `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案（圖片會在任務抽屜顯示縮圖，點擊放大；檔案須在任務工作目錄內）
 * `list_agents` / `list_runners`：查詢可用 Agent 與 Runner
 * `send_message` / `read_messages`：Agent 間訊息（收件者 `*` = 廣播給其他所有人）；`read_messages` 預設只取未讀並標為已讀，廣播訊息每個接收者各自記錄已讀

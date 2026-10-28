@@ -153,6 +153,18 @@ export function useTasks() {
   };
   let runnerTimer: ReturnType<typeof setInterval> | undefined;
 
+  // 連續失敗而被暫停領取的 Agent
+  const pausedAgents = ref<string[]>([]);
+  const fetchPausedAgents = async () => {
+    const res = await api("/api/agents/paused");
+    if (res.ok) pausedAgents.value = (await res.json()) as string[];
+  };
+  const resumeAgent = async (agentId: string) => {
+    const res = await api(`/api/agents/${agentId}/resume`, { method: "POST", body: "{}" });
+    if (!res.ok) throw new Error(await res.text());
+    fetchPausedAgents();
+  };
+
   const postTaskAction = async (taskId: string, action: string, body?: object) => {
     const res = await api(`/api/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify(body ?? {}) });
     if (!res.ok) throw new Error(await res.text());
@@ -165,6 +177,8 @@ export function useTasks() {
   const dispatchTask = (taskId: string, opts: Partial<RunOptions>) => postTaskAction(taskId, "dispatch", opts);
   // 排隊中或執行中都能取消；Runner 執行的任務會在下次心跳時中止
   const cancelTask = (taskId: string) => postTaskAction(taskId, "cancel");
+  // 核准 Agent 建立、等待人類同意的任務
+  const approveTask = (taskId: string) => postTaskAction(taskId, "approve");
   // 失敗的任務重新排隊（因它連鎖失敗的下游任務一併恢復）；fresh 捨棄工作階段，從頭執行
   const requeueTask = (taskId: string, fresh = false) => postTaskAction(taskId, "requeue", { fresh });
 
@@ -259,11 +273,15 @@ export function useTasks() {
       eventSource = new EventSource(`${base_url}/api/events?token=${token}`);
 
       // 狀態變更只重抓任務列表；日誌由 log_added 事件逐則附加，不再整份重抓
-      const handleUpdate = () => fetchTasks();
+      const handleUpdate = () => {
+        fetchTasks();
+        fetchPausedAgents();
+      };
       // 斷線重連期間可能漏掉事件，連上時整份同步一次
       eventSource.addEventListener("open", () => {
         fetchTasks();
         fetchRunners();
+        fetchPausedAgents();
         if (selectedTaskId.value) {
           fetchLogs(selectedTaskId.value);
           fetchArtifacts(selectedTaskId.value);
@@ -278,12 +296,14 @@ export function useTasks() {
         const { id, cancelled } = JSON.parse((e as MessageEvent).data).payload as { id: string; cancelled?: boolean };
         const task = tasks.value.find((t) => t.id === id);
         if (!cancelled) notifyTask(ok ? "任務完成" : "任務失敗", `#${id.slice(0, 8)} ${task?.title ?? ""}`.trim());
-        fetchTasks();
+        handleUpdate();
       };
       eventSource.addEventListener("task_completed", notifyFinished(true));
       eventSource.addEventListener("task_failed", notifyFinished(false));
       eventSource.addEventListener("task_recovered", handleUpdate);
       eventSource.addEventListener("task_requeued", handleUpdate);
+      eventSource.addEventListener("task_approved", handleUpdate);
+      eventSource.addEventListener("agent_resumed", handleUpdate);
       eventSource.addEventListener("task_deleted", handleUpdate);
       eventSource.addEventListener("worktree_changed", handleUpdate);
       eventSource.addEventListener("runners_changed", fetchRunners);
@@ -341,7 +361,7 @@ export function useTasks() {
     );
   });
 
-  const queuedTasks = computed<Task[]>(() => filteredTasks.value.filter((t: Task) => t.status === "queued"));
+  const queuedTasks = computed<Task[]>(() => filteredTasks.value.filter((t: Task) => t.status === "queued" || t.status === "pending_approval"));
   const runningTasks = computed<Task[]>(() => filteredTasks.value.filter((t: Task) => t.status === "running"));
   const completedTasks = computed<Task[]>(() => filteredTasks.value.filter((t: Task) => t.status === "completed"));
   const failedTasks = computed<Task[]>(() => filteredTasks.value.filter((t: Task) => t.status === "failed"));
@@ -371,6 +391,9 @@ export function useTasks() {
     fetchMessages,
     sendMessage,
     runners,
+    pausedAgents,
+    resumeAgent,
+    approveTask,
     spawnTask,
     dispatchTask,
     cancelTask,

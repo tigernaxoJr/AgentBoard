@@ -85,6 +85,8 @@
      * 支援 Agent 透過 `POST /api/messages` 互傳訊息（`sender`、`receiver`、`payload`、可選 `task_id`；`receiver = *` 為廣播，不會送給發送者自己）。
      * `GET /api/messages?receiver=<id>&unread=true&task_id=&limit=` 取得收件匣（含他人的廣播）；`POST /api/messages/read {reader, ids?}` 標記已讀（省略 `ids` = 全部）。已讀紀錄存在 `message_reads(message_id, reader)`，每個接收者各自一份，所以廣播不會被一個人讀過就對其他人消失；舊 `agent_messages.read_status` 欄位已不使用。
      * `GET /api/messages/all?limit=` 為看板檢視（全部訊息，`is_read` 為收件者本人是否已讀），UI「訊息」彈窗使用，並可以 `human` 身分發送。
+     * 失控防護：`tasks.depth` 記錄 Agent 再派發 Agent 的層數（建立者是某 Agent 時 = 它執行中任務的最大 depth + 1，人類 = 0），超過 `MAX_DEPTH`（5）回 422；同一 Agent 最近 `PAUSE_AFTER_FAILURES`（3）筆實際執行的任務全失敗即暫停領取（`claim_task` 回傳空；取消與 attempts = 0 的連鎖失敗不計），`POST /api/agents/{id}/resume` 寫入 `agent_resume.resumed_at` 後重新計數，`GET /api/agents/paused` 列出被暫停者。
+     * 人類審批：建立任務時 `requires_approval: true` → 狀態 `pending_approval`（無法被領取 / 派發 / 執行），`POST /api/tasks/{id}/approve` 轉為 `queued`；可取消，前置任務失敗時一併連鎖失敗。只有 Agent 自願標記才會觸發，平台不強制。
      * MCP：`send_message` / `read_messages`；派發端可用 `wait_task` 等待結果（MCP 端每 2 秒檢查一次，最多 300 秒），不必自己輪詢。
 
 ### Phase 3：前端看板介面 (Vue 3 + Tailwind CSS)

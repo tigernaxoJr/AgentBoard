@@ -54,6 +54,7 @@
 
 ## 已知限制（暫不處理）
 
+- 派發深度靠 `creator` 欄位對應 Agent id 推算，Agent 若用別的名字建立任務就不會累計；`requires_approval` 要由 Agent 自己帶，平台不強制。連續失敗暫停只擋 Runner 領取，不擋面板的立即執行。
 - 任務列表只回傳執行中 / 排隊中的全部任務與最近 200 筆已結束任務；搜尋（`GET /api/tasks?q=`）涵蓋全部任務，但同樣最多 200 筆，尚無完整分頁或封存。
 - worktree 的 diff 統計不含尚未加入 git 的新檔案（新檔案仍會列在「未 commit 的變更」）。
 - 合併一律 merge 進 repo 目前 checkout 的分支；repo 有未 commit 的衝突變更時合併會失敗並自動 abort。
