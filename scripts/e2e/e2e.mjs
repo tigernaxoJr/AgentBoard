@@ -161,6 +161,32 @@ check("T6 task not re-run (attempts == 1)", t.attempts === 1, `attempts=${t.atte
 
 killProc(runner);
 
+// C1 runner --concurrency 2: three 6s tasks never run more than two at once, and all complete
+const runner2 = spawn(CLI, ["runner", "--agent", "agy", "--server", BASE, "--token-file", tokenPath, "--interval", "1", "--concurrency", "2"], {
+  env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}`, FAKE_PID_FILE: pidFile },
+  stdio: ["ignore", "pipe", "pipe"],
+});
+const slow = [];
+for (let i = 0; i < 3; i++) slow.push(await mk("SLOWOK parallel"));
+let maxRunning = 0;
+for (let i = 0; i < 100; i++) {
+  const all = (await api("GET", "/api/tasks")).json.filter((x) => slow.some((s) => s.id === x.id));
+  maxRunning = Math.max(maxRunning, all.filter((x) => x.status === "running").length);
+  if (all.every((x) => x.status === "completed")) break;
+  await sleep(300);
+}
+const slowDone = (await api("GET", "/api/tasks")).json.filter((x) => slow.some((s) => s.id === x.id));
+check("C1 concurrency 2 runs two tasks in parallel", maxRunning === 2, `max running=${maxRunning}`);
+check("C1 all three tasks complete", slowDone.every((x) => x.status === "completed" && x.attempts === 1), JSON.stringify(slowDone.map((x) => x.status)));
+
+// C2 follow-up of a runner-owned running task is deferred until the old process is stopped
+t = await mk("SLOWOK interrupt");
+await waitFor(t.id, (x) => x.status === "running");
+const fu = (await api("POST", `/api/tasks/${t.id}/followup`, { prompt: "change course" })).json;
+check("C2 interrupt follow-up is deferred", fu.status === "queued" && !!fu.not_before && Date.parse(fu.not_before) > Date.now() + 10000, `${fu.status} not_before=${fu.not_before}`);
+await api("POST", `/api/tasks/${fu.id}/cancel`);
+killProc(runner2);
+
 // T7 REST messages
 await api("POST", "/api/messages", { sender: "a", receiver: "b", payload: "direct" });
 await api("POST", "/api/messages", { sender: "a", receiver: "*", payload: "broadcast" });

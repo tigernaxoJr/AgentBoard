@@ -221,28 +221,45 @@ pub struct RunnerConfig {
     pub dry_run: bool,
     pub dry_run_seconds: u64,
     pub once: bool,
+    /// 同時執行的任務數（至少 1）
+    pub concurrency: usize,
 }
 
 pub async fn run_runner(config: RunnerConfig) -> Result<(), Box<dyn std::error::Error>> {
     let token = resolve_token(config.token.as_deref(), config.token_file.as_deref());
     let client = BoardClient::new(config.server.clone(), token, config.agent.clone());
+    let concurrency = config.concurrency.max(1);
+    let config = Arc::new(config);
+    let slots = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
     println!("[*] Agent Board Runner (Native) 啟動");
     println!("[*] Agent ID: {}", config.agent);
     println!("[*] Server: {}", config.server);
     println!("[*] Polling 間隔: {} 秒", config.interval_secs);
+    println!("[*] 並行任務數: {concurrency}");
     println!("[*] 等待領取任務中...\n");
 
     loop {
+        // 先佔位再領取：滿載時不會領走任務卻沒人執行
+        let permit = slots.clone().acquire_owned().await?;
         if let Some(task) = client.claim().await {
-            execute_task(&client, &task, &config).await;
+            let client = client.clone();
+            let cfg = config.clone();
+            let handle = tokio::spawn(async move {
+                execute_task(&client, &task, &cfg).await;
+                drop(permit);
+            });
             if config.once {
+                let _ = handle.await;
                 return Ok(());
             }
             continue;
         }
+        drop(permit);
 
         if config.once {
+            // 等進行中的任務都結束才退出
+            let _ = slots.acquire_many(concurrency as u32).await?;
             return Ok(());
         }
 

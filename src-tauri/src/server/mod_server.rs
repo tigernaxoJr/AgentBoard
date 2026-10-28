@@ -371,9 +371,11 @@ async fn followup_task(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "Task not found".to_string()))?;
 
+    let mut interrupted_runner = false;
     if current_task.status == "running" {
         let _ = TaskService::cancel_task(&state.pool, &id).await;
-        state.spawner.kill(&id);
+        // 不是本機 Spawner 啟動的，就是 Runner 執行的：舊程序要等下次心跳才會被中止
+        interrupted_runner = !state.spawner.kill(&id);
         let _ = state.event_tx.send(BoardEvent {
             event_type: "task_failed".to_string(),
             payload: serde_json::json!({ "id": id, "cancelled": true, "interrupted": true }),
@@ -387,12 +389,27 @@ async fn followup_task(
             StatusCode::CONFLICT,
             "Task not found or has no assigned agent".to_string(),
         ))?;
+    // 接續任務共用 worktree 與工作階段，要等 Runner 發現租約失效並結束舊程序（心跳 15 秒）才能開始
+    let task = if interrupted_runner {
+        TaskService::defer_task(&state.pool, &task.id, RUNNER_INTERRUPT_GRACE_SECS)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        TaskService::get_task(&state.pool, &task.id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .unwrap_or(task)
+    } else {
+        task
+    };
     let _ = state.event_tx.send(BoardEvent {
         event_type: "task_created".to_string(),
         payload: serde_json::to_value(&task).unwrap_or_default(),
     });
     Ok(Json(task))
 }
+
+/// Runner 心跳 15 秒，多留幾秒給它中止子程序
+const RUNNER_INTERRUPT_GRACE_SECS: i64 = 20;
 
 /// 取得 worktree 操作的目標任務；執行中的任務不能合併或捨棄
 async fn finished_task(

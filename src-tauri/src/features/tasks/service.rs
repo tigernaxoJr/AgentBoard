@@ -760,6 +760,19 @@ impl TaskService {
         Ok(task)
     }
 
+    /// 讓排隊中的任務在指定秒數後才可被領取
+    pub async fn defer_task(pool: &Pool<Sqlite>, task_id: &str, secs: i64) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE tasks SET not_before = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '+' || ?1 || ' seconds') \
+             WHERE id = ?2 AND status = 'queued'",
+        )
+        .bind(secs)
+        .bind(task_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     /// 重新排隊失敗的任務：attempts 歸零，並一併恢復因它連鎖失敗的下游任務
     /// （attempts = 0 代表從未被領取，只是被連帶標記失敗）
     /// fresh = true 時清除工作階段，Agent 從頭執行而不是接續上一段對話
@@ -1259,6 +1272,20 @@ mod tests {
         assert!(TaskService::delete_task(&pool, &a.id).await.unwrap());
         let child = TaskService::get_task(&pool, &child.id).await.unwrap().unwrap();
         assert_eq!(child.parent_task_id, None);
+    }
+
+    #[tokio::test]
+    async fn deferred_task_cannot_be_claimed_until_not_before() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        TaskService::defer_task(&pool, &a.id, 60).await.unwrap();
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_none());
+
+        sqlx::query("UPDATE tasks SET not_before = '2000-01-01T00:00:00.000+00:00'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_some());
     }
 
     #[tokio::test]

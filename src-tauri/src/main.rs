@@ -25,6 +25,7 @@ fn main() {
             dry_run: false,
             dry_run_seconds: 3,
             once: false,
+            concurrency: 1,
         };
 
         let mut i = 2;
@@ -59,6 +60,12 @@ fn main() {
                 "--dry-run-seconds" if i + 1 < args.len() => {
                     if let Ok(v) = args[i + 1].parse() {
                         config.dry_run_seconds = v;
+                    }
+                    i += 2;
+                }
+                "--concurrency" if i + 1 < args.len() => {
+                    if let Ok(v) = args[i + 1].parse() {
+                        config.concurrency = v;
                     }
                     i += 2;
                 }

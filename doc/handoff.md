@@ -40,6 +40,7 @@
 - [x] **接入指南極簡化與手冊折疊 (Collapsible API Reference)**：指南只保留「方式一：/api/spec 貼給 AI」與「方式二：MCP 工具」兩大核心方式；下方 API Reference 改為清爽折疊列表，點擊即可展開該端點完整的 curl 範例指令與複製。
 - [x] **一鍵安裝 MCP Server 至 Agent**：在接入指南加入 `⚡ 一鍵加入 Claude` 與 `⚡ 一鍵加入 agy` 按鈕，後端透過 Tauri Command `install_mcp_server` 自動執行 `claude mcp add` / `agy mcp add` 將看板註冊進使用者的 CLI 工具。
 - [x] **原生 Rust 兼當 MCP Server (`agent-board mcp`)**：採用官方 `rmcp` 3.8.0 實作 MCP stdio 協定，直接以執行檔自身（如 `agent-board.exe mcp`）提供 stdio 服務，無需外部 Python 依賴。內建 13 個 MCP 工具轉發至本地 `:18833`，若 Agent Board 尚未啟動會友善回傳提示，桌面端一鍵安裝與複製指令全面改為原生子命令。
+- [x] **Runner 並行與插話競態**：`agent-board runner --concurrency N` 以 semaphore 限制並行數（先佔位再領取，滿載不會多領）；`--once` 會等進行中的任務全結束才退出。對 Runner 執行中的任務追加指示時，接續任務以 `not_before` 延後 20 秒，避免與尚未被中止的舊程序同時寫同一個 worktree / session。e2e 情境 C1、C2 涵蓋。
 - [x] **執行中即時插話 / 中斷轉向 (Mid-turn Interrupt & Follow-up)**：在任務執行中（running）時抽屜輸入框不再鎖定，使用者隨時可打字發送插話；後端收到時會優雅終止原任務子程序，並帶著累積的 session_id 即時喚醒新任務接續對話，達成隨時插話的效果。
 
 ## 待辦功能（依建議優先序）

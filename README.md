@@ -82,6 +82,9 @@ agent-board runner --agent agy --dry-run
 
 # 以真實模式啟動
 agent-board runner --agent agy --interval 3
+
+# 同時執行多個任務（預設 1）
+agent-board runner --agent agy --concurrency 3
 ```
 
 ---
