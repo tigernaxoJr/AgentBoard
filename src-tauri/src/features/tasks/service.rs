@@ -752,6 +752,25 @@ impl TaskService {
         .await?
         .rows_affected();
 
+        if rows > 0 {
+            // 把輸出資料夾內的檔案登記為成果；失敗不影響任務完成
+            let row: Option<(Option<String>, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT worktree_path, workdir, assigned_agent FROM tasks WHERE id = ?")
+                    .bind(task_id)
+                    .fetch_optional(pool)
+                    .await?;
+            if let Some((worktree, workdir, agent)) = row {
+                let roots: Vec<&str> = [worktree.as_deref(), workdir.as_deref()].into_iter().flatten().collect();
+                let _ = crate::features::artifacts::register_outputs(
+                    pool,
+                    task_id,
+                    agent.as_deref().unwrap_or("agent"),
+                    &roots,
+                )
+                .await;
+            }
+        }
+
         Ok(rows > 0)
     }
 
@@ -1623,7 +1642,7 @@ mod tests {
                 "--permission-mode",
                 "acceptEdits",
                 "-p",
-                &format!("p\n\n{}", agents::ASK_HINT)
+                &format!("p\n\n{}", agents::board_hint(&claimed.task))
             ]
         );
         // 不在 Registry 裡的 Agent 也能領取，但沒有 command
@@ -1825,7 +1844,7 @@ mod tests {
         assert_eq!(cb.task.id, b.id);
         assert_eq!(
             cb.command.unwrap().last().unwrap(),
-            &format!("根據分析：改 foo.rs\n開始實作\n\n{}", agents::ASK_HINT)
+            &format!("根據分析：改 foo.rs\n開始實作\n\n{}", agents::board_hint(&cb.task))
         );
         // 資料庫保留範本
         assert!(cb.task.prompt.contains(DEP_RESULT_PLACEHOLDER));
@@ -1919,6 +1938,30 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn completing_registers_files_in_output_dir() {
+        let dir = std::env::temp_dir().join(format!("ab-out-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("agent_board_test_{}.db", uuid::Uuid::new_v4()));
+        let pool = crate::db::init_db(path.to_str().unwrap()).await.unwrap();
+        let t = new_task(&pool, "gen", None).await;
+        sqlx::query("UPDATE tasks SET workdir = ? WHERE id = ?")
+            .bind(dir.to_str().unwrap())
+            .bind(&t.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let out = dir.join(crate::features::artifacts::output_dir(&t.id));
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("a.png"), b"x").unwrap();
+
+        assert!(TaskService::complete_task(&pool, &t.id, &claimed.lease_id).await.unwrap());
+        let list = crate::features::artifacts::ArtifactService::list_by_task(&pool, &t.id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].file_path.ends_with("/a.png"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

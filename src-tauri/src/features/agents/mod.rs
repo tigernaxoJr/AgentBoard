@@ -75,15 +75,29 @@ pub fn command_for(agent_id: &str, task: &Task) -> Option<Vec<String>> {
     let prompt = if task.prompt.starts_with('/') {
         task.prompt.clone()
     } else {
-        format!("{}\n\n{ASK_HINT}", task.prompt)
+        format!("{}\n\n{}", task.prompt, board_hint(task))
     };
     argv.extend(["-p".into(), prompt]);
     Some(argv)
 }
 
-/// 附在每個 prompt 後的提問約定：headless 模式下 Agent 的原生提問工具不可用（claude 停用、agy 不輸出內容），
-/// 改由 Agent 在結果結尾附 ask 區塊，前端解析成選項按鈕（見 src/ui.ts 的 parseAsk）
-pub(crate) const ASK_HINT: &str = "[Board] If you cannot continue without the user's decision, stop and end your final reply with one fenced block tagged `ask` containing JSON: {\"question\":\"...\",\"options\":[\"A\",\"B\"]}. Otherwise do not output it.";
+/// 附在每個 prompt 後的說明，措辭刻意中性：不提平台、任務 id 或派發者，Agent 只當成一般的 CLI 指令。
+/// 1. 提問約定：headless 模式下原生提問工具不可用（claude 停用、agy 不輸出內容），
+///    改由 Agent 在結果結尾附 ask 區塊，前端解析成選項按鈕（見 src/ui.ts 的 parseAsk）
+/// 2. 輸出資料夾：任務完成後平台自動把裡面的檔案登記為成果（見 artifacts::register_outputs）
+pub(crate) fn board_hint(task: &Task) -> String {
+    let dir = crate::features::artifacts::output_dir(&task.id);
+    // 語言跟 prompt 一致，免得中文任務後面接一段英文，看起來像外部程式附加的固定範本
+    if task.prompt.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        format!(
+            "如果需要我決定什麼才能繼續，請停下來並在回覆最後附上一個 ```ask 區塊，內容是像 {{\"question\":\"...\",\"options\":[\"A\",\"B\"]}} 的 JSON；不需要就直接做完。\n你產出的檔案請放在 ./{dir}/，我之後會去那裡找。"
+        )
+    } else {
+        format!(
+            "If you need me to decide something before you can go on, stop and end your reply with a ```ask block holding JSON like {{\"question\":\"...\",\"options\":[\"A\",\"B\"]}}; otherwise just carry on.\nAny files you create for me, please put in ./{dir}/ so I can find them."
+        )
+    }
+}
 
 /// 處理 Agent 輸出的一行：寫日誌、記錄工作階段與結果，並廣播日誌事件
 pub async fn ingest_output(
@@ -339,7 +353,8 @@ mod tests {
 
     #[test]
     fn builds_agy_command_with_flags_before_prompt() {
-        let argv = command_for("agy", &task(Some("gemini-4-argon-high"), false)).unwrap();
+        let t = task(Some("gemini-4-argon-high"), false);
+        let argv = command_for("agy", &t).unwrap();
         assert_eq!(
             argv,
             [
@@ -351,7 +366,10 @@ mod tests {
                 "--mode",
                 "accept-edits",
                 "-p",
-                &format!("做點事 --model evil; rm -rf /\n\n{ASK_HINT}")
+                &format!(
+                    "做點事 --model evil; rm -rf /\n\n{}",
+                    board_hint(&t)
+                )
             ]
         );
     }

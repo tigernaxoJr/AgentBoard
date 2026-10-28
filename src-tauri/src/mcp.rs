@@ -204,7 +204,7 @@ pub struct CreateTaskParams {
     pub priority: Option<i32>,
     /// 指定模型名稱（例如 'sonnet', 'haiku', 'pro', 'flash'）
     pub model: Option<String>,
-    /// 任務執行時的工作目錄路徑
+    /// 任務執行時的工作目錄（絕對路徑）。要讀寫專案檔案時務必指定；省略時平台配一個空的專屬目錄，Agent 看不到你的專案
     pub workdir: Option<String>,
     /// 略過權限確認
     pub auto_approve: Option<bool>,
@@ -222,7 +222,7 @@ pub struct DispatchTaskParams {
     pub agent: Option<String>,
     /// 指定模型
     pub model: Option<String>,
-    /// 指定工作目錄
+    /// 工作目錄（絕對路徑）。要讀寫專案檔案時務必指定；省略時平台配一個空的專屬目錄
     pub workdir: Option<String>,
     /// 是否略過授權
     pub auto_approve: Option<bool>,
@@ -238,7 +238,7 @@ pub struct SpawnTaskParams {
     pub agent: Option<String>,
     /// 指定模型
     pub model: Option<String>,
-    /// 指定工作目錄
+    /// 工作目錄（絕對路徑）。要讀寫專案檔案時務必指定；省略時平台配一個空的專屬目錄
     pub workdir: Option<String>,
     /// 是否略過授權
     pub auto_approve: Option<bool>,

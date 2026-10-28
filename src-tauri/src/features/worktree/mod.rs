@@ -66,6 +66,22 @@ pub async fn prepare(
     claimed: &mut ClaimedTask,
     root: &Path,
 ) -> Result<(), String> {
+    // 沒指定工作目錄時由平台配一個專屬目錄並記入任務，這樣輸出資料夾的位置是確定的（成果才登記得到）
+    if claimed.task.workdir.as_deref().is_none_or(str::is_empty) && !claimed.task.isolate {
+        // 一律用絕對路徑：Runner 的目前目錄和伺服器不一定相同
+        let dir = std::path::absolute(root.join("workspaces").join(crate::features::artifacts::opaque_name(&claimed.task.id)))
+            .map_err(|e| format!("無法建立工作目錄：{e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立工作目錄：{e}"))?;
+        let dir_str = dir.to_string_lossy().into_owned();
+        sqlx::query("UPDATE tasks SET workdir = ? WHERE id = ?")
+            .bind(&dir_str)
+            .bind(&claimed.task.id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        claimed.task.workdir = Some(dir_str.clone());
+        claimed.run_dir = Some(dir_str);
+    }
     if !claimed.task.isolate {
         return Ok(());
     }

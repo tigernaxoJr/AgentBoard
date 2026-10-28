@@ -415,7 +415,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
             tokio::select! {
                 line = line_rx.recv() => match line {
                     Some(line) => {
-                        println!("[{}] {}", agent_id_display, &line[..line.len().min(200)]);
+                        println!("[{}] {}", agent_id_display, line.chars().take(200).collect::<String>());
                         batch.push(line);
                         if batch.len() >= BATCH_LINES {
                             client_out.flush(&t_id_out, &l_id_out, &mut batch, &lease_lost_out).await;

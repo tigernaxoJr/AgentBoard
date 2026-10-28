@@ -75,6 +75,58 @@ impl ArtifactService {
     }
 }
 
+/// 任務的輸出資料夾（相對於執行目錄）。prompt 只說「檔案存到這裡」，Agent 不需要知道任務 id 或平台存在
+pub fn output_dir(task_id: &str) -> String {
+    format!("outputs/{}", opaque_name(task_id))
+}
+
+/// 由任務 id 推出的目錄名稱（FNV-1a 雜湊，固定演算法所以重啟後仍對得上）。
+/// 不直接用 id 前綴，避免 Agent 拿目錄名去對應任務
+pub fn opaque_name(task_id: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in task_id.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:08x}", h as u32)
+}
+
+/// 任務完成後，把輸出資料夾內的檔案登記為成果（已登記過的路徑不重複登記）
+pub async fn register_outputs(
+    pool: &Pool<Sqlite>,
+    task_id: &str,
+    agent_id: &str,
+    roots: &[&str],
+) -> Result<(), sqlx::Error> {
+    let rel = output_dir(task_id);
+    let existing: Vec<String> = ArtifactService::list_by_task(pool, task_id)
+        .await?
+        .into_iter()
+        .map(|a| a.file_path)
+        .collect();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(std::path::Path::new(root).join(&rel)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.path().is_file() {
+                continue;
+            }
+            let file_path = format!("{rel}/{}", entry.file_name().to_string_lossy());
+            if existing.contains(&file_path) {
+                continue;
+            }
+            let dto = CreateArtifactDto {
+                agent_id: agent_id.to_string(),
+                summary: entry.file_name().to_string_lossy().into_owned(),
+                file_path,
+            };
+            ArtifactService::create_artifact(pool, task_id, dto).await?;
+        }
+    }
+    Ok(())
+}
+
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// 成果檔案的內容類型；只回傳瀏覽器可直接顯示的圖片，其餘一律當下載

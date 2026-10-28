@@ -123,6 +123,7 @@ Agent Board 執行檔本身即可兼當原生 MCP 伺服端（`agent-board mcp`�
 * `spawn_task`：由看板立即啟動子程序執行
 * `dispatch_task`：排入待辦派工給 Runner
 * `followup_task`：追加後續指示（接續 session）
+  * 每個任務的 prompt 後會附上中性的說明（不提平台、任務 id 或派發者）：請 Agent 把產出檔案存到 `./outputs/<任務 id 的雜湊>/`，任務完成時平台自動把該資料夾內的檔案登記為成果，Agent 不需要 MCP 也不需知道 task_id；未指定工作目錄的任務，平台會在資料目錄下配 `workspaces/<id 的雜湊>/` 當工作目錄，確保輸出資料夾位置確定
   * Agent 若在結果結尾附上 ```` ```ask ```` 區塊（問題與選項），UI 會顯示成按鈕供點選回答；任務詳情也有「壓縮對話」（`/compact`）按鈕
 * `requeue_task` / `cancel_task`：重試或取消
   * 同一個 Agent 連續 3 次實際執行都失敗時，Runner 會暫停領取新任務（側邊欄 Runners 顯示「已暫停・恢復」，排除問題後按一下恢復；取消與連鎖失敗不計入）
