@@ -79,8 +79,16 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
             sender TEXT NOT NULL,
             receiver TEXT NOT NULL,
             payload TEXT NOT NULL,
-            read_status INTEGER NOT NULL DEFAULT 0,
+            task_id TEXT,
             created_at TEXT NOT NULL
+        );
+
+        -- 每個接收者各自的已讀紀錄（廣播訊息才不會被一個人讀過就對其他人消失）
+        CREATE TABLE IF NOT EXISTS message_reads (
+            message_id TEXT NOT NULL,
+            reader TEXT NOT NULL,
+            read_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, reader)
         );
 
         CREATE TABLE IF NOT EXISTS task_templates (
@@ -114,11 +122,24 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         CREATE INDEX IF NOT EXISTS idx_task_logs_task_time ON task_logs(task_id, created_at);
         DROP INDEX IF EXISTS idx_task_logs_task_id;
         CREATE INDEX IF NOT EXISTS idx_artifacts_task_id ON artifacts(task_id);
-        CREATE INDEX IF NOT EXISTS idx_agent_messages_receiver ON agent_messages(receiver, read_status);
+        DROP INDEX IF EXISTS idx_agent_messages_receiver;
+        CREATE INDEX IF NOT EXISTS idx_agent_messages_receiver ON agent_messages(receiver, created_at);
         "#,
     )
     .execute(pool)
     .await?;
+
+    // 舊資料庫的 agent_messages 仍帶有已不使用的 read_status 欄位（有預設值，INSERT 不必提供）
+    let has_task_id: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('agent_messages') WHERE name = 'task_id'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_task_id {
+        sqlx::query("ALTER TABLE agent_messages ADD COLUMN task_id TEXT")
+            .execute(pool)
+            .await?;
+    }
 
     for (column, ddl) in [
         ("lease_id", "lease_id TEXT"),

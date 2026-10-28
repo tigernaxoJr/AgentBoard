@@ -2,7 +2,7 @@ use crate::features::agents::{self, AGENTS};
 use crate::features::artifacts::{ArtifactService, CreateArtifactDto};
 use crate::features::cli_sessions;
 use crate::features::execution::{SpawnError, Spawner};
-use crate::features::messages::{MessageService, SendMessageDto};
+use crate::features::messages::{DEFAULT_MESSAGE_LIMIT, MessageService, SendMessageDto};
 use crate::features::runners::Runners;
 use crate::features::stats::{StatsQuery, StatsService};
 use crate::features::tasks::{
@@ -48,6 +48,15 @@ pub struct ServerState {
 pub struct GetMessagesQuery {
     pub receiver: String,
     pub unread: Option<bool>,
+    pub task_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct MarkReadDto {
+    pub reader: String,
+    /// 省略 = 收件匣內全部標為已讀
+    pub ids: Option<Vec<String>>,
 }
 
 pub fn create_router(state: ServerState) -> Router {
@@ -86,6 +95,8 @@ pub fn create_router(state: ServerState) -> Router {
         .route("/api/artifacts/{id}/file", get(artifact_file))
         // Messages
         .route("/api/messages", post(send_message).get(get_messages))
+        .route("/api/messages/read", post(mark_messages_read))
+        .route("/api/messages/all", get(recent_messages))
         // Stats
         .route("/api/stats", get(get_stats))
         // Templates
@@ -159,6 +170,17 @@ async fn delete_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // 帶著 worktree 的任務一併刪除會讓尚未合併的修改和分支變成無人管理的殘留，要求先處理掉
+    if let Some(task) = TaskService::get_task(&state.pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        && task.worktree_path.is_some()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "任務還有 worktree，請先合併或捨棄後再刪除".to_string(),
+        ));
+    }
     // 若正在本機執行，先中止 process
     state.spawner.kill(&id);
     let deleted = TaskService::delete_task(&state.pool, &id)
@@ -445,8 +467,9 @@ async fn worktree_discard(
 }
 
 async fn list_cli_sessions() -> impl IntoResponse {
-    let dir = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".claude/projects"))
+    // Windows 沒有 HOME 環境變數，改用 dirs 取得使用者家目錄
+    let dir = dirs::home_dir()
+        .map(|h| h.join(".claude/projects"))
         .unwrap_or_default();
     // 掃目錄與讀檔頭是阻塞 IO
     let sessions = tokio::task::spawn_blocking(move || cli_sessions::list_claude_sessions(&dir))
@@ -685,11 +708,42 @@ async fn get_messages(
     State(state): State<ServerState>,
     Query(query): Query<GetMessagesQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let messages =
-        MessageService::get_messages(&state.pool, &query.receiver, query.unread.unwrap_or(false))
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let messages = MessageService::get_messages(
+        &state.pool,
+        &query.receiver,
+        query.unread.unwrap_or(false),
+        query.task_id.as_deref(),
+        query.limit.unwrap_or(DEFAULT_MESSAGE_LIMIT),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(messages))
+}
+
+#[derive(Deserialize)]
+pub struct RecentMessagesQuery {
+    pub limit: Option<i64>,
+}
+
+/// 看板檢視：所有 Agent 之間的訊息，不限收件者
+async fn recent_messages(
+    State(state): State<ServerState>,
+    Query(query): Query<RecentMessagesQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let messages = MessageService::recent(&state.pool, query.limit.unwrap_or(DEFAULT_MESSAGE_LIMIT))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(messages))
+}
+
+async fn mark_messages_read(
+    State(state): State<ServerState>,
+    Json(dto): Json<MarkReadDto>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let marked = MessageService::mark_read(&state.pool, &dto.reader, dto.ids.as_deref())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "marked": marked })))
 }
 
 // Stats Handler
@@ -817,6 +871,8 @@ Auth Header: Authorization: Bearer <API_TOKEN>
 5. Other Useful Endpoints:
    - GET /api/tasks : List all tasks (optional query ?q=keyword)
    - POST /api/tasks/{id}/cancel : Cancel a queued or running task
+   - POST /api/messages {sender, receiver, payload, task_id?} : Send a message to another agent (receiver "*" = broadcast to everyone else)
+   - GET /api/messages?receiver=<your id>&unread=true : Read your inbox; then POST /api/messages/read {reader, ids?} to mark read
    - GET /api/agents : List registered local agents and available models
    - GET /api/events?token=<token> : Server-Sent Events (SSE) stream for live task updates
 "#;

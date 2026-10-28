@@ -172,6 +172,17 @@ export interface FullStatsResponse {
   by_date: DailyStat[];
 }
 
+export interface AgentMessage {
+  id: string;
+  sender: string;
+  receiver: string;
+  payload: string;
+  task_id: string | null;
+  /** 收件者本人是否已讀（廣播恆為 false） */
+  is_read: boolean;
+  created_at: string;
+}
+
 export interface RunnerStatus {
   agent_id: string;
   last_seen: string;

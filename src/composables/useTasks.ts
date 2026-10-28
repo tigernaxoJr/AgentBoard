@@ -1,7 +1,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { notifyTask } from "./useNotifications";
-import type { AgentDef, AgentUsageSummary, Artifact, CliSession, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
+import type { AgentDef, AgentMessage, AgentUsageSummary, Artifact, CliSession, CliUpdateResult, CreateTaskPayload, FullStatsResponse, RunnerStatus, RunOptions, Task, TaskLog, TaskTemplate, WorktreeStatus } from "../types";
 
 export interface ApiConfig {
   base_url: string;
@@ -114,6 +114,21 @@ export function useTasks() {
     return (await res.json()) as CliSession[];
   };
 
+  // Agent 間訊息：看板檢視全部，並可以 human 身分發送；有新訊息時 messageTick 會變動，供彈窗重抓
+  const messageTick = ref(0);
+  const fetchMessages = async (): Promise<AgentMessage[]> => {
+    const res = await api("/api/messages/all?limit=200");
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()) as AgentMessage[];
+  };
+  const sendMessage = async (receiver: string, payload: string, taskId?: string) => {
+    const res = await api("/api/messages", {
+      method: "POST",
+      body: JSON.stringify({ sender: "human", receiver, payload, task_id: taskId || null }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  };
+
   const updateAgentCli = async (agentId: string): Promise<CliUpdateResult> => {
     const res = await api(`/api/agents/${agentId}/update`, { method: "POST" });
     if (!res.ok) throw new Error(await res.text());
@@ -155,7 +170,7 @@ export function useTasks() {
 
   const deleteTask = async (taskId: string) => {
     const res = await api(`/api/tasks/${taskId}`, { method: "DELETE" });
-    if (!res.ok) throw new Error("刪除任務失敗");
+    if (!res.ok) throw new Error((await res.text()) || "刪除任務失敗");
     tasks.value = tasks.value.filter((t) => t.id !== taskId);
     if (selectedTaskId.value === taskId) {
       selectedTaskId.value = null;
@@ -272,6 +287,7 @@ export function useTasks() {
       eventSource.addEventListener("task_deleted", handleUpdate);
       eventSource.addEventListener("worktree_changed", handleUpdate);
       eventSource.addEventListener("runners_changed", fetchRunners);
+      eventSource.addEventListener("message_sent", () => messageTick.value++);
       eventSource.addEventListener("artifact_created", (e) => {
         const artifact = JSON.parse((e as MessageEvent).data).payload as Artifact;
         if (artifact.task_id === selectedTaskId.value) activeTaskArtifacts.value.unshift(artifact);
@@ -351,6 +367,9 @@ export function useTasks() {
     agents,
     updateAgentCli,
     fetchCliSessions,
+    messageTick,
+    fetchMessages,
+    sendMessage,
     runners,
     spawnTask,
     dispatchTask,

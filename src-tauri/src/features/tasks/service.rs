@@ -19,6 +19,8 @@ pub struct CreateTaskDto {
     pub isolate: Option<bool>,
     /// 接續既有的 CLI session（面板列出的外部 session）
     pub session_id: Option<String>,
+    /// 領取優先序，越大越先被領取（預設 0）
+    pub priority: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,13 +209,14 @@ impl TaskService {
         task.auto_approve = dto.auto_approve.unwrap_or(false);
         task.isolate = dto.isolate.unwrap_or(false);
         task.session_id = dto.session_id.filter(|s| !s.is_empty());
+        task.priority = dto.priority.unwrap_or(0);
 
         // 任務與依賴同一個交易：依賴 ID 不存在（FK 失敗）時整筆回滾，避免產生「無依賴」的任務被直接執行
         let mut tx = pool.begin().await?;
         sqlx::query(
             r#"
-            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, title, prompt, status, assigned_agent, creator, last_heartbeat_at, model, workdir, auto_approve, isolate, session_id, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&task.id)
@@ -228,6 +231,7 @@ impl TaskService {
         .bind(task.auto_approve)
         .bind(task.isolate)
         .bind(&task.session_id)
+        .bind(task.priority)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(&mut *tx)
@@ -254,10 +258,15 @@ impl TaskService {
         if tasks.is_empty() {
             return Ok(());
         }
-        let deps: Vec<(String, String)> =
-            sqlx::query_as("SELECT task_id, depends_on_task_id FROM task_dependencies")
-                .fetch_all(pool)
-                .await?;
+        // 只查這批任務的依賴，而不是整張表
+        let ids = serde_json::to_string(&tasks.iter().map(|t| &t.id).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let deps: Vec<(String, String)> = sqlx::query_as(
+            "SELECT task_id, depends_on_task_id FROM task_dependencies WHERE task_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(ids)
+        .fetch_all(pool)
+        .await?;
 
         let mut by_task: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -578,6 +587,12 @@ impl TaskService {
         .bind(Utc::now().to_rfc3339())
         .execute(&mut *tx)
         .await?;
+
+        // 追加指示的子任務不隨原任務刪除，只是不再指向它
+        sqlx::query("UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id = ?")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
 
         // 刪除關聯資料
         sqlx::query("DELETE FROM task_logs WHERE task_id = ?").bind(task_id).execute(&mut *tx).await?;
@@ -1091,6 +1106,37 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_task_detaches_its_followups() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        sqlx::query("UPDATE tasks SET status = 'completed', assigned_agent = 'agy' WHERE id = ?")
+            .bind(&a.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let child = TaskService::create_followup(&pool, &a.id, "more")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.parent_task_id.as_deref(), Some(a.id.as_str()));
+
+        assert!(TaskService::delete_task(&pool, &a.id).await.unwrap());
+        let child = TaskService::get_task(&pool, &child.id).await.unwrap().unwrap();
+        assert_eq!(child.parent_task_id, None);
+    }
+
+    #[tokio::test]
+    async fn list_returns_dependencies_for_each_task() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let listed = TaskService::list_tasks(&pool, None).await.unwrap();
+        let deps = |id: &str| listed.iter().find(|t| t.id == id).unwrap().dependency_ids.clone();
+        assert_eq!(deps(&b.id), [a.id.clone()]);
+        assert!(deps(&a.id).is_empty());
     }
 
     #[tokio::test]

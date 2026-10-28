@@ -12,6 +12,9 @@ const APP_IDENTIFIER: &str = "com.naxo.agent-board";
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:18833";
 const DEFAULT_LIMIT: usize = 10;
 const DEFAULT_MAX_CHARS: usize = 1500;
+const DEFAULT_WAIT_SECS: u64 = 60;
+const MAX_WAIT_SECS: u64 = 300;
+const WAIT_POLL_SECS: u64 = 2;
 
 fn get_default_token_file() -> PathBuf {
     dirs::data_dir()
@@ -106,6 +109,18 @@ impl BoardHttpClient {
     }
 }
 
+/// 查詢字串用的百分比編碼（只保留 RFC 3986 的非保留字元）
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 fn clip(text: &str, limit: usize) -> String {
     if limit == 0 || text.chars().count() <= limit {
         return text.to_string();
@@ -161,6 +176,16 @@ pub struct GetTaskParams {
     pub full: Option<bool>,
     /// 附上 prompt（預設不附）
     pub include_prompt: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WaitTaskParams {
+    /// 任務 ID
+    pub task_id: String,
+    /// 最多等幾秒，預設 60、上限 300（超過 MCP 用戶端逾時會被中斷）
+    pub timeout_secs: Option<u64>,
+    /// prompt/result 各自長度上限，預設 1500
+    pub max_chars: Option<usize>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -269,6 +294,22 @@ pub struct SendMessageParams {
     pub receiver: String,
     /// 訊息文字或 JSON 內容
     pub payload: String,
+    /// 關聯的任務 ID（可選）
+    pub task_id: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ReadMessagesParams {
+    /// 收件者 ID（自己的 Agent ID）
+    pub receiver: String,
+    /// true（預設）= 只取未讀；false = 取最近的全部訊息
+    pub unread_only: Option<bool>,
+    /// 只取指定任務的訊息
+    pub task_id: Option<String>,
+    /// 最多回傳幾則，預設 20
+    pub limit: Option<usize>,
+    /// 取回後立即標為已讀，預設 true
+    pub mark_read: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -393,6 +434,29 @@ impl AgentBoardMcpServer {
         to_call_result(res)
     }
 
+    #[tool(name = "wait_task", description = "等待任務結束（completed / failed）後回傳結果；逾時則回傳目前狀態並標示 timed_out，可再呼叫一次繼續等")]
+    async fn wait_task(&self, params: Parameters<WaitTaskParams>) -> CallToolResult {
+        let p = params.0;
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(p.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).min(MAX_WAIT_SECS));
+        loop {
+            let mut task = match self.client.get(&format!("/api/tasks/{}", p.task_id)) {
+                Ok(task) => task,
+                Err(e) => return to_call_result(Err(e)),
+            };
+            let finished = matches!(task["status"].as_str(), Some("completed" | "failed"));
+            let timed_out = !finished && std::time::Instant::now() >= deadline;
+            if finished || timed_out {
+                if let serde_json::Value::Object(ref mut map) = task {
+                    map.remove("prompt");
+                    map.insert("timed_out".into(), timed_out.into());
+                }
+                return to_call_result(Ok(slim_task(task, p.max_chars.unwrap_or(DEFAULT_MAX_CHARS))));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(WAIT_POLL_SECS)).await;
+        }
+    }
+
     #[tool(name = "create_task", description = "建立看板任務")]
     async fn create_task(&self, params: Parameters<CreateTaskParams>) -> CallToolResult {
         let payload = serde_json::to_value(&params.0).unwrap_or(serde_json::Value::Null);
@@ -481,16 +545,50 @@ impl AgentBoardMcpServer {
         to_call_result(res)
     }
 
-    #[tool(name = "send_message", description = "發送 Agent 間的內部訊息留言")]
+    #[tool(name = "send_message", description = "發送 Agent 間的內部訊息；receiver 填 '*' 代表廣播給其他所有 Agent")]
     async fn send_message(&self, params: Parameters<SendMessageParams>) -> CallToolResult {
         let p = params.0;
         let payload = serde_json::json!({
             "sender": p.sender,
             "receiver": p.receiver,
-            "payload": p.payload
+            "payload": p.payload,
+            "task_id": p.task_id
         });
         let res = self.client.post("/api/messages", Some(payload));
         to_call_result(res)
+    }
+
+    #[tool(name = "read_messages", description = "讀取自己的收件匣（含別人的廣播）；預設只取未讀並標為已讀")]
+    async fn read_messages(&self, params: Parameters<ReadMessagesParams>) -> CallToolResult {
+        let p = params.0;
+        let unread_only = p.unread_only.unwrap_or(true);
+        let mut query = format!(
+            "/api/messages?receiver={}&unread={}&limit={}",
+            url_encode(&p.receiver),
+            unread_only,
+            p.limit.unwrap_or(20)
+        );
+        if let Some(task_id) = p.task_id.as_deref().filter(|t| !t.is_empty()) {
+            query.push_str(&format!("&task_id={}", url_encode(task_id)));
+        }
+        let messages = match self.client.get(&query) {
+            Ok(val) => val,
+            Err(e) => return to_call_result(Err(e)),
+        };
+
+        if p.mark_read.unwrap_or(true) {
+            let ids: Vec<&str> = messages
+                .as_array()
+                .map(|list| list.iter().filter_map(|m| m["id"].as_str()).collect())
+                .unwrap_or_default();
+            if !ids.is_empty() {
+                let body = serde_json::json!({ "reader": p.receiver, "ids": ids });
+                if let Err(e) = self.client.post("/api/messages/read", Some(body)) {
+                    return to_call_result(Err(e));
+                }
+            }
+        }
+        to_call_result(Ok(messages))
     }
 }
 

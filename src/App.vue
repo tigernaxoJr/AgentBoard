@@ -9,6 +9,7 @@ import RunTaskModal, { type RunMode } from "./components/RunTaskModal.vue";
 import StatsModal from "./components/StatsModal.vue";
 import TemplateModal from "./components/TemplateModal.vue";
 import CliSessionsModal from "./components/CliSessionsModal.vue";
+import MessagesModal from "./components/MessagesModal.vue";
 import AgentCliUpdateModal from "./components/AgentCliUpdateModal.vue";
 import Icon from "./components/Icon.vue";
 import DependencyGraph from "./components/DependencyGraph.vue";
@@ -53,6 +54,9 @@ const {
   deleteTemplate,
   fetchStats,
   fetchCliSessions,
+  messageTick,
+  fetchMessages,
+  sendMessage,
   updateAgentCli,
   agentUsage,
   fetchAgentUsage,
@@ -64,6 +68,7 @@ const showStatsModal = ref(false);
 const showTemplateModal = ref(false);
 const showCliUpdateModal = ref(false);
 const showSessionsModal = ref(false);
+const showMessagesModal = ref(false);
 const selectedTemplateForCreate = ref<TaskTemplate | null>(null);
 const runTarget = ref<Task | null>(null);
 // 看板 / 依賴關係圖
@@ -444,6 +449,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </button>
 
         <button
+          @click="showMessagesModal = true"
+          class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
+          title="Agent 之間的訊息"
+        >
+          <span>💬</span>
+          <span>訊息</span>
+        </button>
+
+        <button
           @click="showCliUpdateModal = true"
           class="shrink-0 flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-xs text-ink-2 hover:bg-raised hover:text-ink transition-colors"
           title="檢查並更新 CLI (agy / claude)"
@@ -620,6 +634,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       :fetch-sessions="fetchCliSessions"
       :create-task="createTask"
       @close="showSessionsModal = false"
+    />
+
+    <MessagesModal
+      v-if="showMessagesModal"
+      :fetch-messages="fetchMessages"
+      :send-message="sendMessage"
+      :tick="messageTick"
+      :agent-ids="agents.map((a) => a.id)"
+      @close="showMessagesModal = false"
     />
 
     <!-- Agent CLI Update Modal -->

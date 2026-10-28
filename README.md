@@ -115,7 +115,9 @@ Agent Board 執行檔本身即可兼當原生 MCP 伺服端（`agent-board mcp`�
   * Agent 若在結果結尾附上 ```` ```ask ```` 區塊（問題與選項），UI 會顯示成按鈕供點選回答；任務詳情也有「壓縮對話」（`/compact`）按鈕
 * `requeue_task` / `cancel_task`：重試或取消
 * `add_artifact` / `list_artifacts`：登記或檢視產出成果檔案（圖片會在任務抽屜顯示縮圖，點擊放大；檔案須在任務工作目錄內）
-* `list_agents` / `list_runners` / `send_message`：查詢可用 Agent、Runner 與留訊息
+* `list_agents` / `list_runners`：查詢可用 Agent 與 Runner
+* `send_message` / `read_messages`：Agent 間訊息（收件者 `*` = 廣播給其他所有人）；`read_messages` 預設只取未讀並標為已讀，廣播訊息每個接收者各自記錄已讀
+* `wait_task`：等待任務結束（最多 300 秒，逾時回傳目前狀態並標示 `timed_out`），取代自己反覆輪詢 `get_task`
 
 ### 配置方式範例
 

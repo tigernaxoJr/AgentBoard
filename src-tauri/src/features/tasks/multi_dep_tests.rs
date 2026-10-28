@@ -22,6 +22,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             auto_approve: Some(true),
             isolate: Some(false),
             session_id: None,
+            priority: None,
         },
     )
     .await
@@ -40,6 +41,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             auto_approve: Some(true),
             isolate: Some(false),
             session_id: None,
+            priority: None,
         },
     )
     .await
@@ -59,6 +61,7 @@ async fn test_multi_dependencies_and_prompt_chaining() {
             auto_approve: Some(true),
             isolate: Some(false),
             session_id: None,
+            priority: None,
         },
     )
     .await

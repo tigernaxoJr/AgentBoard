@@ -23,6 +23,7 @@ async fn test_stats_and_templates_lifecycle() {
             auto_approve: Some(true),
             isolate: Some(false),
             session_id: None,
+            priority: None,
         },
     )
     .await
