@@ -24,6 +24,9 @@
 - [x] **失敗原因 / 重試退避 / Agent 自報失敗**：`tasks.error`、`tasks.not_before`（見 plan.md Phase 1 第 8 項）；抽屜顯示「失敗原因」與「重試等待」。`/fail` 可帶 `reason`，Runner 已會帶。
 - [x] **資料庫版本化**：新的結構變更加到 `db::MIGRATIONS`（`PRAGMA user_version`）。
 - [x] **跨平台**：用量統計、子程序預設工作目錄、`agent_path` 改用 `dirs::home_dir()`（Windows 沒有 `HOME`）；`add_task_log` / `create_artifact` 對不存在的任務回 404 而不是 500；原本 Windows 上失敗的 2 個 execution 測試改成跨平台（標記檔、`.cmd`）。
+- [x] **端到端實測後修掉的 Runner bug**（用假 agent + headless 伺服器 + `agent-board runner` / `mcp` 實機跑過）：
+  1. 輸出批次迴圈永遠不結束（`select!` 的 `else` 分支在計時器存在時不會觸發），所以 Runner 在子程序結束後**從來不會回報完成 / 失敗**，任務卡在 running 直到租約逾時。已改為自行追蹤通道關閉。
+  2. 伺服器不可達時，輸出批次（包含最終的 result 行）被當成已送達而丟掉，任務完成但沒有結果文字、下游 `{{dep.result}}` 拿到「（無結果）」。現在連線失敗會保留輸出（上限 2000 行）並在結束前重送。
 - [x] **Runner 可靠性修正**：`complete` / `fail` 回報失敗（連線錯誤或 5xx）時重試最多 5 次（指數退避），避免租約逾時後任務被放回佇列重跑；阻塞式 HTTP 改以 `block_in_place` 呼叫，不佔住 tokio worker 拖慢心跳；取消 / 租約失效時結束整個 process tree（unix 用 process group，Windows 用 `taskkill /T /F`，Spawner 與 Runner 共用 `kill_tree`）。
 - [x] **原生地圖/資料夾選擇彈窗**：整合 `tauri-plugin-dialog`，在建立任務與範本庫可直接彈窗瀏覽選目錄。
 - [x] **模型下拉選單與前置勾選**：建立任務彈窗支援直接勾選已有任務，並依 Agent 自動帶出可用模型下拉選單。

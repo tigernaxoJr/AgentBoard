@@ -14,6 +14,17 @@ const HEARTBEAT_SECS: u64 = 15;
 const FLUSH_INTERVAL_MS: u64 = 500;
 const BATCH_LINES: usize = 50;
 const FINISH_RETRIES: u32 = 5;
+/// 伺服器不可達時最多暫存多少行輸出
+const MAX_BUFFERED_LINES: usize = 2000;
+
+/// 一批輸出的送達結果
+enum Sent {
+    Delivered,
+    /// 租約已失效（任務被取消或回收）
+    LeaseLost,
+    /// 暫時失敗，輸出要保留重送
+    Retry,
+}
 
 fn get_default_token_file() -> PathBuf {
     dirs::data_dir()
@@ -131,7 +142,7 @@ impl BoardClient {
             .await;
     }
 
-    async fn output(&self, task_id: &str, lease_id: &str, lines: &[String]) -> bool {
+    async fn output(&self, task_id: &str, lease_id: &str, lines: &[String]) -> Sent {
         match self
             .post(
                 &format!("/api/tasks/{task_id}/output"),
@@ -143,9 +154,33 @@ impl BoardClient {
             )
             .await
         {
-            Ok(_) => true,
-            Err((Some(409), _)) => false,
-            Err(_) => true,
+            Ok(_) => Sent::Delivered,
+            Err((Some(409), _)) => Sent::LeaseLost,
+            // 連線失敗或伺服器暫時出錯：輸出要留著重送，最終結果行（result 事件）掉了任務就沒有結果文字
+            Err(_) => Sent::Retry,
+        }
+    }
+
+    /// 送出並清空一批輸出；暫時失敗時保留，下次一併重送（最多保留 MAX_BUFFERED_LINES 行，超過丟掉最舊的）
+    async fn flush(&self, task_id: &str, lease_id: &str, batch: &mut Vec<String>, lease_lost: &AtomicBool) {
+        if batch.is_empty() {
+            return;
+        }
+        if lease_lost.load(Ordering::SeqCst) {
+            batch.clear();
+            return;
+        }
+        match self.output(task_id, lease_id, batch).await {
+            Sent::Delivered => batch.clear(),
+            Sent::LeaseLost => {
+                lease_lost.store(true, Ordering::SeqCst);
+                batch.clear();
+            }
+            Sent::Retry => {
+                if batch.len() > MAX_BUFFERED_LINES {
+                    batch.drain(..batch.len() - MAX_BUFFERED_LINES);
+                }
+            }
         }
     }
 
@@ -357,43 +392,32 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
         let mut flush_ticker = tokio::time::interval(Duration::from_millis(FLUSH_INTERVAL_MS));
         let mut rx_open = true;
 
-        loop {
+        // 通道關閉（程序結束、兩條管線都讀完）後才會收到 None；
+        // 計時器永遠有效，所以不能靠 select! 的 else 分支偵測，要自己記錄 rx_open
+        while rx_open {
             tokio::select! {
-                Some(line) = line_rx.recv() => {
-                    println!("[{}] {}", agent_id_display, &line[..line.len().min(200)]);
-                    batch.push(line);
-                    if batch.len() >= BATCH_LINES {
-                        if !lease_lost_out.load(Ordering::SeqCst) {
-                            if !client_out.output(&t_id_out, &l_id_out, &batch).await {
-                                lease_lost_out.store(true, Ordering::SeqCst);
-                            }
+                line = line_rx.recv() => match line {
+                    Some(line) => {
+                        println!("[{}] {}", agent_id_display, &line[..line.len().min(200)]);
+                        batch.push(line);
+                        if batch.len() >= BATCH_LINES {
+                            client_out.flush(&t_id_out, &l_id_out, &mut batch, &lease_lost_out).await;
                         }
-                        batch.clear();
                     }
-                }
+                    None => rx_open = false,
+                },
                 _ = flush_ticker.tick() => {
-                    if !batch.is_empty() {
-                        if !lease_lost_out.load(Ordering::SeqCst) {
-                            if !client_out.output(&t_id_out, &l_id_out, &batch).await {
-                                lease_lost_out.store(true, Ordering::SeqCst);
-                            }
-                        }
-                        batch.clear();
-                    }
-                    if !rx_open && batch.is_empty() {
-                        break;
-                    }
-                }
-                else => {
-                    rx_open = false;
-                    if batch.is_empty() {
-                        break;
-                    }
+                    client_out.flush(&t_id_out, &l_id_out, &mut batch, &lease_lost_out).await;
                 }
             }
         }
-        if !batch.is_empty() && !lease_lost_out.load(Ordering::SeqCst) {
-            let _ = client_out.output(&t_id_out, &l_id_out, &batch).await;
+        // 程序已結束：把剩下的（含之前沒送出去的）盡量送完，再由外層回報完成 / 失敗
+        for attempt in 0..FINISH_RETRIES {
+            client_out.flush(&t_id_out, &l_id_out, &mut batch, &lease_lost_out).await;
+            if batch.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
         }
     });
 
