@@ -27,6 +27,10 @@ export interface Task {
   input_tokens: number | null;
   output_tokens: number | null;
   duration_ms: number | null;
+  /** 最近一次失敗的原因 */
+  error: string | null;
+  /** 逾時重試的退避：在這個時間之前不會被領取 */
+  not_before: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -215,13 +215,20 @@ async fn claim_task(
     if let Some(claimed) = task.as_mut()
         && let Err(e) = worktree::prepare(&state.pool, claimed, &state.data_dir).await
     {
+        let reason = e.clone();
         let log = AddTaskLogDto {
             agent_id: dto.agent_id.clone(),
             level: Some("ERROR".into()),
             message: e,
         };
         let _ = TaskService::add_log(&state.pool, &claimed.task.id, log).await;
-        let _ = TaskService::fail_task(&state.pool, &claimed.task.id, &claimed.lease_id).await;
+        let _ = TaskService::fail_task_with_reason(
+            &state.pool,
+            &claimed.task.id,
+            &claimed.lease_id,
+            Some(&reason),
+        )
+        .await;
         let _ = state.event_tx.send(BoardEvent {
             event_type: "task_failed".to_string(),
             payload: serde_json::json!({ "id": claimed.task.id }),
@@ -518,6 +525,17 @@ async fn touch_runner_for_task(state: &ServerState, task_id: &str, running: bool
     }
 }
 
+/// 寫入掛在任務底下的資料（日誌、成果）時，任務不存在會違反外鍵：回 404 而不是 500
+fn task_scoped_error(e: sqlx::Error) -> (StatusCode, String) {
+    if e.as_database_error()
+        .is_some_and(|d| d.is_foreign_key_violation())
+    {
+        (StatusCode::NOT_FOUND, "Task not found".to_string())
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    }
+}
+
 const LEASE_MISMATCH: &str = "Task not running or lease mismatch";
 
 async fn heartbeat_task(
@@ -558,13 +576,21 @@ async fn complete_task(
     }
 }
 
+#[derive(Deserialize)]
+pub struct FailDto {
+    pub lease_id: String,
+    /// 失敗原因，顯示在任務詳情
+    pub reason: Option<String>,
+}
+
 async fn fail_task(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-    Json(dto): Json<LeaseDto>,
+    Json(dto): Json<FailDto>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let success = TaskService::fail_task(&state.pool, &id, &dto.lease_id)
-        .await
+    let success =
+        TaskService::fail_task_with_reason(&state.pool, &id, &dto.lease_id, dto.reason.as_deref())
+            .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if success {
@@ -612,7 +638,7 @@ async fn add_task_log(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let log = TaskService::add_log(&state.pool, &id, dto)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(task_scoped_error)?;
 
     let _ = state.event_tx.send(BoardEvent {
         event_type: "log_added".to_string(),
@@ -639,7 +665,7 @@ async fn create_artifact(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let artifact = ArtifactService::create_artifact(&state.pool, &id, dto)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(task_scoped_error)?;
 
     let _ = state.event_tx.send(BoardEvent {
         event_type: "artifact_created".to_string(),

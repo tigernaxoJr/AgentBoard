@@ -114,6 +114,16 @@ pub async fn ingest_output(
             }
             Parsed::Result(result) => {
                 let _ = TaskService::set_result(pool, task_id, &result).await;
+                // Agent 自己回報失敗時，不論程序結束碼是什麼都算失敗，否則下游任務會拿錯誤的結果繼續跑
+                if result.is_error {
+                    let reason = format!("Agent 回報執行失敗：{}", result.text.trim());
+                    if let Ok(true) = TaskService::fail_running_task(pool, task_id, &reason).await {
+                        let _ = event_tx.send(BoardEvent {
+                            event_type: "task_failed".into(),
+                            payload: serde_json::json!({ "id": task_id }),
+                        });
+                    }
+                }
             }
             Parsed::Usage(usage) => {
                 let _ = TaskService::add_usage(pool, task_id, &usage).await;
@@ -208,11 +218,12 @@ pub struct AgentUsageSummary {
 
 /// 零 Token 消耗查詢各 Agent CLI 的本地用量與額度狀況
 pub async fn get_cli_usage_stats() -> AgentUsageSummary {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    // Windows 沒有 HOME 環境變數
+    let home = dirs::home_dir().unwrap_or_else(|| ".".into());
 
     // 1. Claude: 讀取 ~/.claude.json 中的 cachedUsageUtilization（CLI 自帶快取）
     let claude_info = {
-        let claude_json_path = std::path::Path::new(&home).join(".claude.json");
+        let claude_json_path = home.join(".claude.json");
         if let Ok(content) = std::fs::read_to_string(claude_json_path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                 let cached = &v["cachedUsageUtilization"];
@@ -250,7 +261,7 @@ pub async fn get_cli_usage_stats() -> AgentUsageSummary {
 
     // 2. Agy: 彙整 ~/.gemini/antigravity-cli/brain 今日產生之 transcript 本機 Token 計量
     let agy_info = {
-        let brain_dir = std::path::Path::new(&home).join(".gemini/antigravity-cli/brain");
+        let brain_dir = home.join(".gemini/antigravity-cli/brain");
         let today_prefix = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut in_tokens = 0i64;
         let mut out_tokens = 0i64;

@@ -151,14 +151,18 @@ impl BoardClient {
 
     /// 回報結果；連線失敗或伺服器錯誤時重試，否則租約逾時後任務會被放回佇列重跑
     /// 4xx（含租約失效的 409）重試也不會成功，直接放棄
-    async fn finish(&self, task_id: &str, lease_id: &str, ok: bool) {
-        let action = if ok { "complete" } else { "fail" };
+    /// outcome：Ok = 完成，Err(原因) = 失敗
+    async fn finish(&self, task_id: &str, lease_id: &str, outcome: Result<(), &str>) {
+        let (action, body) = match outcome {
+            Ok(()) => ("complete", serde_json::json!({ "lease_id": lease_id })),
+            Err(reason) => (
+                "fail",
+                serde_json::json!({ "lease_id": lease_id, "reason": reason }),
+            ),
+        };
         for attempt in 0..FINISH_RETRIES {
             let res = self
-                .post(
-                    &format!("/api/tasks/{task_id}/{action}"),
-                    serde_json::json!({ "lease_id": lease_id }),
-                )
+                .post(&format!("/api/tasks/{task_id}/{action}"), body.clone())
                 .await;
             match res {
                 Ok(_) => return,
@@ -228,15 +232,16 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
     if config.dry_run {
         println!("[Dry-run] 模擬任務執行中（{} 秒）...", config.dry_run_seconds);
         tokio::time::sleep(Duration::from_secs(config.dry_run_seconds)).await;
-        client.finish(task_id, lease_id, true).await;
+        client.finish(task_id, lease_id, Ok(())).await;
         client.log(task_id, "任務模擬執行完成！", "INFO").await;
         return;
     }
 
     let command_arr = task.get("command").and_then(|v| v.as_array());
     let Some(raw_cmd) = command_arr else {
-        client.log(task_id, &format!("不支援的 Agent：{}", config.agent), "ERROR").await;
-        client.finish(task_id, lease_id, false).await;
+        let reason = format!("不支援的 Agent：{}", config.agent);
+        client.log(task_id, &reason, "ERROR").await;
+        client.finish(task_id, lease_id, Err(&reason)).await;
         return;
     };
 
@@ -246,7 +251,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
         .collect();
     if args.is_empty() {
         client.log(task_id, "空指令無法執行", "ERROR").await;
-        client.finish(task_id, lease_id, false).await;
+        client.finish(task_id, lease_id, Err("空指令無法執行")).await;
         return;
     }
 
@@ -288,7 +293,7 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
             let msg = format!("無法啟動 {}：{e}", args[0]);
             eprintln!("[{}] {msg}", config.agent);
             client.log(task_id, &msg, "ERROR").await;
-            client.finish(task_id, lease_id, false).await;
+            client.finish(task_id, lease_id, Err(&msg)).await;
             return;
         }
     };
@@ -417,17 +422,19 @@ async fn execute_task(client: &BoardClient, task: &serde_json::Value, config: &R
 
     match exit_status.unwrap() {
         Ok(status) if status.success() => {
-            client.finish(task_id, lease_id, true).await;
+            client.finish(task_id, lease_id, Ok(())).await;
             client.log(task_id, "任務已成功完成！", "INFO").await;
         }
         Ok(status) => {
             let code = status.code().unwrap_or(-1);
-            client.finish(task_id, lease_id, false).await;
-            client.log(task_id, &format!("任務異常退出，代碼: {code}"), "ERROR").await;
+            let reason = format!("程序異常結束，結束碼：{code}");
+            client.finish(task_id, lease_id, Err(&reason)).await;
+            client.log(task_id, &reason, "ERROR").await;
         }
         Err(e) => {
-            client.finish(task_id, lease_id, false).await;
-            client.log(task_id, &format!("執行過程拋出異常: {e}"), "ERROR").await;
+            let reason = format!("等待程序時發生錯誤：{e}");
+            client.finish(task_id, lease_id, Err(&reason)).await;
+            client.log(task_id, &reason, "ERROR").await;
         }
     }
 }

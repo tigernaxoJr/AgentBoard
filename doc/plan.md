@@ -68,6 +68,8 @@
   6. 加入背景定時檢查：
      * 自動偵測 `last_heartbeat_at` 逾時的任務，將其恢復為 `queued` 或標記 `failed`。
   7. 加入 **SSE (`GET /api/events`)** 讓後端狀態變更與日誌即時推播。
+  8. **失敗原因與重試退避**：`tasks.error` 記錄最近一次失敗的原因（程序結束碼、無法啟動、Agent 自己回報失敗、租約逾時、取消、前置任務失敗 / 被刪除），重新領取或重新排隊時清除；`POST /api/tasks/{id}/fail` 可附 `reason`。逾時放回佇列時設定 `tasks.not_before`（第 n 次嘗試後等 `n × 30` 秒），領取時略過尚未到期的任務；`spawn`（面板直接執行）不受退避限制。Agent 的結果事件帶 `is_error`（claude）或非 `SUCCESS`（agy）時，任務直接標記失敗，即使程序結束碼是 0，避免下游任務拿錯誤的結果繼續執行。
+  9. **資料庫版本**：舊的「缺欄位就補」邏輯視為版本 0 不再擴充；之後的結構變更加進 `db::MIGRATIONS`，依序各執行一次，版本號存在 `PRAGMA user_version`。
 
 ### Phase 2：Agent 端介接與測試（先期：輪詢機制）
 * **目標**：讓派發任務的 Agent 與執行的 `agy` 透過輪詢機制無縫對接看板。
@@ -110,3 +112,16 @@
   1. **事件推播管線完善**：看板後端透過 SSE 頻道（`GET /api/events`）廣播 `task_ready` 與 `task_updated` 事件。
   2. **事件喚醒 Runner**：外部 Runner 掛起監聽 SSE，收到事件通知時立即喚醒本機開新 `agy` session，完全取代定時輪詢。
   3. **派發端事件通知**：派發端可選擇透過監聽 SSE 串流或接收 Webhook 回呼取代輪詢確認任務狀態。
+
+### Phase 6：多 Agent 身分與存取控制（未來規劃）
+> 目前定位是**本機單人使用**，所有 Agent 共用同一個 API token，風險有限，所以先不做；之後要開放給多人或遠端 Runner 時再處理。
+* **目標**：讓每個 Agent 只能做自己該做的事，避免冒充與越權。
+* **已知缺口**：
+  1. **身分不可信**：`agent_id`、`creator`、訊息的 `sender` 都是呼叫端自己填的，持有 token 的任何一方都能冒充別人（領取、寫日誌、登記成果、發訊息）。`complete` / `fail` / `heartbeat` 已經要求租約，不受影響。
+  2. **`auto_approve` 搭配任意 `workdir`**：任何持有 token 的呼叫端都能建立「完整權限、在任意目錄執行」的任務。
+* **執行項目**：
+  1. 每個 Agent（Runner / MCP）各自一組 token，token 對應固定的 `agent_id`；伺服器以 token 決定身分，忽略請求裡自報的 `agent_id` / `sender` / `creator`。看板視窗保留一組 human token。
+  2. 可設定允許的 `workdir` 根目錄清單；範圍外的路徑不能建立任務，`auto_approve` 可另外限定只在清單內有效。
+  3. Runner、MCP 安裝流程與「API 說明」彈窗要改成配發 / 顯示各自的 token。
+* **決策待定**：根目錄清單存放位置（App 設定檔或資料庫）、舊的單一 token 是否保留為 human 專用。
+

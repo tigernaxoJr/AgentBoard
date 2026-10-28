@@ -21,6 +21,9 @@
 - [x] **Agent 訊息收件匣**：訊息改為每個接收者各自已讀（`message_reads`），新增 `task_id`、`POST /api/messages/read`、`GET /api/messages/all`；MCP 新增 `read_messages`；UI 頂欄「訊息」彈窗。
 - [x] **MCP `wait_task`**：等待任務結束，逾時回傳目前狀態（`timed_out`）。
 - [x] **修正**：MCP / REST 的 `priority` 之前被後端丟掉，現在 `POST /api/tasks` 接受 `priority`；刪除任務時，帶著 worktree 的任務拒絕刪除（409，先合併或捨棄）、追加指示的子任務會解除 `parent_task_id`；任務列表只查所列任務的依賴；CLI Sessions 在 Windows 改用 `dirs::home_dir()`（原本讀 `HOME`，Windows 上永遠是空的）。
+- [x] **失敗原因 / 重試退避 / Agent 自報失敗**：`tasks.error`、`tasks.not_before`（見 plan.md Phase 1 第 8 項）；抽屜顯示「失敗原因」與「重試等待」。`/fail` 可帶 `reason`，Runner 已會帶。
+- [x] **資料庫版本化**：新的結構變更加到 `db::MIGRATIONS`（`PRAGMA user_version`）。
+- [x] **跨平台**：用量統計、子程序預設工作目錄、`agent_path` 改用 `dirs::home_dir()`（Windows 沒有 `HOME`）；`add_task_log` / `create_artifact` 對不存在的任務回 404 而不是 500；原本 Windows 上失敗的 2 個 execution 測試改成跨平台（標記檔、`.cmd`）。
 - [x] **Runner 可靠性修正**：`complete` / `fail` 回報失敗（連線錯誤或 5xx）時重試最多 5 次（指數退避），避免租約逾時後任務被放回佇列重跑；阻塞式 HTTP 改以 `block_in_place` 呼叫，不佔住 tokio worker 拖慢心跳；取消 / 租約失效時結束整個 process tree（unix 用 process group，Windows 用 `taskkill /T /F`，Spawner 與 Runner 共用 `kill_tree`）。
 - [x] **原生地圖/資料夾選擇彈窗**：整合 `tauri-plugin-dialog`，在建立任務與範本庫可直接彈窗瀏覽選目錄。
 - [x] **模型下拉選單與前置勾選**：建立任務彈窗支援直接勾選已有任務，並依 Agent 自動帶出可用模型下拉選單。

@@ -44,6 +44,10 @@ pub struct Task {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub duration_ms: Option<i64>,
+    /// 最近一次失敗的原因（重新領取或重新排隊時清除）
+    pub error: Option<String>,
+    /// 逾時重試的退避：在這個時間之前不會被領取
+    pub not_before: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -82,6 +86,8 @@ impl Task {
             input_tokens: None,
             output_tokens: None,
             duration_ms: None,
+            error: None,
+            not_before: None,
             created_at: now.clone(),
             updated_at: now,
         }

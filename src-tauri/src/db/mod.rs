@@ -173,5 +173,56 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         }
     }
 
+    apply_versioned_migrations(pool).await
+}
+
+/// 之後的結構變更一律加在這裡，依序各執行一次；版本號記在 SQLite 的 `PRAGMA user_version`
+/// （上面的「補欄位」是版本號出現之前的舊資料庫相容，視為版本 0，不要再往裡面加東西）
+const MIGRATIONS: &[&str] = &[
+    // 1：失敗原因，與逾時重試的最早可領取時間（退避用）
+    "ALTER TABLE tasks ADD COLUMN error TEXT;
+     ALTER TABLE tasks ADD COLUMN not_before TEXT;",
+];
+
+async fn apply_versioned_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    let current: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current.max(0) as usize) {
+        sqlx::query(sql).execute(pool).await?;
+        // PRAGMA 不能綁參數
+        sqlx::query(&format!("PRAGMA user_version = {}", i + 1))
+            .execute(pool)
+            .await?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migrations_run_once_and_are_idempotent() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate(&pool).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('error', 'not_before')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, 2);
+    }
 }

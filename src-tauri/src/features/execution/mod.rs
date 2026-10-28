@@ -89,7 +89,7 @@ impl Spawner {
             .ok_or(SpawnError::NotClaimable)?;
         if let Err(e) = worktree::prepare(&self.pool, &mut claimed, &self.data_dir).await {
             self.log(task_id, &agent_id, "ERROR", e.clone()).await;
-            self.finish(task_id, &claimed.lease_id, false).await;
+            self.finish(task_id, &claimed.lease_id, Err(&e)).await;
             return Err(SpawnError::Worktree(e));
         }
         let argv = claimed
@@ -147,7 +147,7 @@ impl Spawner {
             .run_dir
             .clone()
             .or_else(|| std::env::var("AGENT_BOARD_WORKDIR").ok())
-            .or_else(|| std::env::var("HOME").ok());
+            .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
 
         // prompt 是最後一個參數，日誌只記錄指令本身
         let shown = argv[..argv.len().saturating_sub(1)].join(" ");
@@ -179,14 +179,9 @@ impl Spawner {
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(e) => {
-                self.log(
-                    task_id,
-                    &agent,
-                    "ERROR",
-                    format!("無法啟動 {}：{e}", argv[0]),
-                )
-                .await;
-                self.finish(task_id, lease_id, false).await;
+                let reason = format!("無法啟動 {}：{e}", argv[0]);
+                self.log(task_id, &agent, "ERROR", reason.clone()).await;
+                self.finish(task_id, lease_id, Err(&reason)).await;
                 return;
             }
         };
@@ -234,25 +229,20 @@ impl Spawner {
             Outcome::Exited(Ok(status)) if status.success() => {
                 self.log(task_id, &agent, "INFO", "任務已成功完成".into())
                     .await;
-                self.finish(task_id, lease_id, true).await;
+                self.finish(task_id, lease_id, Ok(())).await;
             }
             Outcome::Exited(Ok(status)) => {
                 let code = status
                     .code()
                     .map_or("無（被訊號終止）".to_string(), |c| c.to_string());
-                self.log(
-                    task_id,
-                    &agent,
-                    "ERROR",
-                    format!("程序異常結束，結束碼：{code}"),
-                )
-                .await;
-                self.finish(task_id, lease_id, false).await;
+                let reason = format!("程序異常結束，結束碼：{code}");
+                self.log(task_id, &agent, "ERROR", reason.clone()).await;
+                self.finish(task_id, lease_id, Err(&reason)).await;
             }
             Outcome::Exited(Err(e)) => {
-                self.log(task_id, &agent, "ERROR", format!("等待程序時發生錯誤：{e}"))
-                    .await;
-                self.finish(task_id, lease_id, false).await;
+                let reason = format!("等待程序時發生錯誤：{e}");
+                self.log(task_id, &agent, "ERROR", reason.clone()).await;
+                self.finish(task_id, lease_id, Err(&reason)).await;
             }
             Outcome::Aborted => {
                 self.log(
@@ -274,11 +264,15 @@ impl Spawner {
         }
     }
 
-    async fn finish(&self, task_id: &str, lease_id: &str, ok: bool) {
-        let result = if ok {
-            TaskService::complete_task(&self.pool, task_id, lease_id).await
-        } else {
-            TaskService::fail_task(&self.pool, task_id, lease_id).await
+    /// 回報結束：Ok = 完成，Err(原因) = 失敗
+    async fn finish(&self, task_id: &str, lease_id: &str, outcome: Result<(), &str>) {
+        let ok = outcome.is_ok();
+        let result = match outcome {
+            Ok(()) => TaskService::complete_task(&self.pool, task_id, lease_id).await,
+            Err(reason) => {
+                TaskService::fail_task_with_reason(&self.pool, task_id, lease_id, Some(reason))
+                    .await
+            }
         };
         if let Ok(true) = result {
             let event = if ok { "task_completed" } else { "task_failed" };
@@ -311,7 +305,7 @@ fn agent_path() -> OsString {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = dirs::home_dir();
     let extras = [
         home.as_ref().map(|h| h.join(".local/bin")),
         home.as_ref().map(|h| h.join(".cargo/bin")),
@@ -419,18 +413,24 @@ mod tests {
     #[tokio::test]
     async fn successful_process_completes_task_with_logs() {
         let (spawner, pool) = setup(1000).await;
-        let claimed = claim(&pool, Some("/tmp")).await;
+        // 用標記檔確認子程序在指定的工作目錄執行（pwd 的路徑格式在各平台不同）
+        let dir = std::env::temp_dir().join(format!("agent_board_cwd_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let claimed = claim(&pool, dir.to_str()).await;
         let id = claimed.task.id.clone();
-        within(spawner.start(claimed, sh("echo hello; echo warn-line >&2; pwd"))).await;
+        within(spawner.start(claimed, sh("echo hello; echo warn-line >&2; touch ran-here"))).await;
 
         let (status, logs) = status_and_logs(&pool, &id).await;
-        assert_eq!(status, "completed");
-        for expected in ["hello", "warn-line", "/tmp"] {
+        let ran_in_workdir = dir.join("ran-here").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(status, "completed", "{logs:?}");
+        for expected in ["hello", "warn-line"] {
             assert!(
                 logs.iter().any(|l| l == expected),
                 "missing log {expected}: {logs:?}"
             );
         }
+        assert!(ran_in_workdir, "process did not run in the task's workdir");
     }
 
     #[tokio::test]
@@ -505,8 +505,11 @@ mod tests {
         let (mut spawner, pool) = setup(1000).await;
         let dir = std::env::temp_dir().join(format!("agent_board_bin_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let bin = dir.join("fake-agent");
-        std::fs::write(&bin, "#!/bin/sh\necho found-me\n").unwrap();
+        // Windows 只會把有副檔名的 .cmd 當成可執行檔
+        let name = if cfg!(windows) { "fake-agent.cmd" } else { "fake-agent" };
+        let bin = dir.join(name);
+        let script = if cfg!(windows) { "@echo found-me\r\n" } else { "#!/bin/sh\necho found-me\n" };
+        std::fs::write(&bin, script).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -519,7 +522,7 @@ mod tests {
 
         let claimed = claim(&pool, None).await;
         let id = claimed.task.id.clone();
-        within(spawner.start(claimed, vec!["fake-agent".into(), "prompt".into()])).await;
+        within(spawner.start(claimed, vec![name.into(), "prompt".into()])).await;
         let (status, logs) = status_and_logs(&pool, &id).await;
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(status, "completed", "{logs:?}");
@@ -530,7 +533,7 @@ mod tests {
     fn agent_path_adds_common_cli_dirs_once() {
         let path = agent_path();
         let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
-        let local_bin = PathBuf::from(std::env::var("HOME").unwrap()).join(".local/bin");
+        let local_bin = dirs::home_dir().unwrap().join(".local/bin");
         let before = std::env::var_os("PATH").map_or(0, |p| {
             std::env::split_paths(&p)
                 .filter(|d| *d == local_bin)

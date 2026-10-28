@@ -157,6 +157,10 @@ pub struct RecoveryResult {
 
 /// 任務最多被領取幾次，逾時重試超過即視為失敗
 pub const MAX_ATTEMPTS: i64 = 3;
+/// 逾時後重新排隊的退避：第 n 次嘗試後等 n * 這麼多秒才能被再次領取
+pub const RETRY_BACKOFF_SECS: i64 = 30;
+/// 失敗原因的字數上限
+const MAX_ERROR_CHARS: usize = 500;
 
 /// 看板列表最多顯示幾筆已結束的任務
 pub const FINISHED_LIST_LIMIT: i64 = 200;
@@ -346,11 +350,13 @@ impl TaskService {
             UPDATE tasks
             SET status = 'running', assigned_agent = ?1, lease_id = ?2,
                 result = NULL, cost_usd = NULL, input_tokens = NULL, output_tokens = NULL, duration_ms = NULL,
+                error = NULL, not_before = NULL,
                 attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3
             WHERE status = 'queued' AND id = (
                 SELECT t.id FROM tasks t
                 WHERE t.status = 'queued'
                   AND (t.assigned_agent IS NULL OR t.assigned_agent = ?1)
+                  AND (t.not_before IS NULL OR t.not_before <= ?3)
                   AND NOT EXISTS (
                     SELECT 1 FROM task_dependencies td
                     JOIN tasks dep ON dep.id = td.depends_on_task_id
@@ -390,6 +396,7 @@ impl TaskService {
             UPDATE tasks
             SET status = 'running', assigned_agent = ?1, lease_id = ?2,
                 result = NULL, cost_usd = NULL, input_tokens = NULL, output_tokens = NULL, duration_ms = NULL,
+                error = NULL, not_before = NULL,
                 attempts = attempts + 1, last_heartbeat_at = ?3, updated_at = ?3,
                 model = NULLIF(COALESCE(?4, model), ''),
                 workdir = NULLIF(COALESCE(?5, workdir), ''),
@@ -551,7 +558,7 @@ impl TaskService {
     pub async fn cancel_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
-            "UPDATE tasks SET status = 'failed', lease_id = NULL, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')"
+            "UPDATE tasks SET status = 'failed', lease_id = NULL, error = '已取消', updated_at = ? WHERE id = ? AND status IN ('queued', 'running')"
         )
         .bind(&now)
         .bind(task_id)
@@ -578,7 +585,7 @@ impl TaskService {
                 UNION
                 SELECT td.task_id FROM task_dependencies td JOIN downstream d ON td.depends_on_task_id = d.id
             )
-            UPDATE tasks SET status = 'failed', updated_at = ?2
+            UPDATE tasks SET status = 'failed', error = '前置任務已被刪除', updated_at = ?2
             WHERE status = 'queued' AND id IN (SELECT id FROM downstream)
               AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND status != 'completed')
             "#,
@@ -664,10 +671,44 @@ impl TaskService {
         task_id: &str,
         lease_id: &str,
     ) -> Result<bool, sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
+        Self::fail_task_with_reason(pool, task_id, lease_id, None).await
+    }
+
+    /// Agent 在結果事件裡自己回報失敗（程序結束碼可能仍是 0）：不需租約，只要任務還在執行中
+    /// 之後 Runner / Spawner 再回報 complete 會因為任務已不在執行中而被忽略
+    pub async fn fail_running_task(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        reason: &str,
+    ) -> Result<bool, sqlx::Error> {
         let rows = sqlx::query(
-            "UPDATE tasks SET status = 'failed', lease_id = NULL, updated_at = ? WHERE id = ? AND status = 'running' AND lease_id = ?"
+            "UPDATE tasks SET status = 'failed', lease_id = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'",
         )
+        .bind(agents::stream::truncate(reason, MAX_ERROR_CHARS))
+        .bind(Utc::now().to_rfc3339())
+        .bind(task_id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        if rows > 0 {
+            Self::cascade_dependency_failures(pool).await?;
+        }
+        Ok(rows > 0)
+    }
+
+    /// 同 `fail_task`，並記錄失敗原因
+    pub async fn fail_task_with_reason(
+        pool: &Pool<Sqlite>,
+        task_id: &str,
+        lease_id: &str,
+        reason: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let reason = reason.map(|r| agents::stream::truncate(r, MAX_ERROR_CHARS));
+        let rows = sqlx::query(
+            "UPDATE tasks SET status = 'failed', lease_id = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_id = ?"
+        )
+        .bind(&reason)
         .bind(&now)
         .bind(task_id)
         .bind(lease_id)
@@ -749,6 +790,7 @@ impl TaskService {
         let rows = sqlx::query(
             r#"
             UPDATE tasks SET status = 'queued', attempts = 0, lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?1,
+                error = NULL, not_before = NULL,
                 session_id = CASE WHEN ?3 THEN NULL ELSE session_id END
             WHERE id = ?2 AND status = 'failed'
             "#,
@@ -770,7 +812,7 @@ impl TaskService {
                 UNION
                 SELECT td.task_id FROM task_dependencies td JOIN downstream d ON td.depends_on_task_id = d.id
             )
-            UPDATE tasks SET status = 'queued', updated_at = ?2
+            UPDATE tasks SET status = 'queued', error = NULL, updated_at = ?2
             WHERE id IN (SELECT id FROM downstream) AND status = 'failed' AND attempts = 0
             "#,
         )
@@ -796,12 +838,15 @@ impl TaskService {
         let expired: Vec<(String, i64)> = sqlx::query_as(
             r#"
             UPDATE tasks
-            SET status = CASE WHEN attempts >= ? THEN 'failed' ELSE 'queued' END,
-                lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?
+            SET status = CASE WHEN attempts >= ?1 THEN 'failed' ELSE 'queued' END,
+                error = CASE WHEN attempts >= ?1 THEN '租約逾時：已嘗試 ' || attempts || ' 次，Runner 都沒有回報心跳' ELSE error END,
+                not_before = CASE WHEN attempts >= ?1 THEN NULL
+                    ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '+' || (?4 * attempts) || ' seconds') END,
+                lease_id = NULL, last_heartbeat_at = NULL, updated_at = ?2
             WHERE status = 'running'
               AND (
-                (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?)
-                OR (last_heartbeat_at IS NULL AND updated_at < ?)
+                (last_heartbeat_at IS NOT NULL AND last_heartbeat_at < ?3)
+                OR (last_heartbeat_at IS NULL AND updated_at < ?3)
               )
             RETURNING status, attempts
             "#,
@@ -809,7 +854,7 @@ impl TaskService {
         .bind(MAX_ATTEMPTS)
         .bind(&now)
         .bind(&threshold_str)
-        .bind(&threshold_str)
+        .bind(RETRY_BACKOFF_SECS)
         .fetch_all(pool)
         .await?;
 
@@ -834,7 +879,7 @@ impl TaskService {
         loop {
             let rows = sqlx::query(
                 r#"
-                UPDATE tasks SET status = 'failed', updated_at = ?
+                UPDATE tasks SET status = 'failed', error = '前置任務失敗', updated_at = ?
                 WHERE status = 'queued'
                   AND id IN (
                     SELECT td.task_id FROM task_dependencies td
@@ -960,11 +1005,24 @@ mod tests {
             .status
     }
 
-    /// 讓所有 running 任務立即視為逾時
+    /// 讓所有 running 任務立即視為逾時（並略過重試退避，讓測試能馬上重新領取）
     async fn expire_all(pool: &Pool<Sqlite>) -> RecoveryResult {
+        let result = expire_all_keeping_backoff(pool).await;
+        sqlx::query("UPDATE tasks SET not_before = NULL")
+            .execute(pool)
+            .await
+            .unwrap();
+        result
+    }
+
+    async fn expire_all_keeping_backoff(pool: &Pool<Sqlite>) -> RecoveryResult {
         TaskService::recover_timed_out_tasks(pool, -1)
             .await
             .unwrap()
+    }
+
+    async fn error_of(pool: &Pool<Sqlite>, id: &str) -> Option<String> {
+        TaskService::get_task(pool, id).await.unwrap().unwrap().error
     }
 
     #[tokio::test]
@@ -1088,6 +1146,81 @@ mod tests {
         assert_eq!(status(&pool, &b.id).await, "failed");
         assert_eq!(status(&pool, &c.id).await, "failed");
         assert_eq!(status(&pool, &other.id).await, "queued");
+    }
+
+    #[tokio::test]
+    async fn timed_out_task_waits_before_it_can_be_claimed_again() {
+        let pool = memory_pool().await;
+        let task = new_task(&pool, "a", None).await;
+        TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        assert_eq!(expire_all_keeping_backoff(&pool).await.requeued, 1);
+
+        assert_eq!(status(&pool, &task.id).await, "queued");
+        assert!(
+            TaskService::claim_task(&pool, "agy").await.unwrap().is_none(),
+            "backoff should hold the task back"
+        );
+
+        sqlx::query("UPDATE tasks SET not_before = '2000-01-01T00:00:00.000+00:00'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(TaskService::claim_task(&pool, "agy").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn failure_reasons_are_recorded_and_cleared_on_requeue() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        let b = new_task(&pool, "b", Some(&a.id)).await;
+        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        assert!(
+            TaskService::fail_task_with_reason(&pool, &a.id, &claimed.lease_id, Some("boom"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(error_of(&pool, &a.id).await.as_deref(), Some("boom"));
+        assert_eq!(error_of(&pool, &b.id).await.as_deref(), Some("前置任務失敗"));
+
+        TaskService::requeue_task(&pool, &a.id, false).await.unwrap();
+        assert_eq!(error_of(&pool, &a.id).await, None);
+        assert_eq!(error_of(&pool, &b.id).await, None);
+    }
+
+    #[tokio::test]
+    async fn timeout_and_cancel_leave_a_reason() {
+        let pool = memory_pool().await;
+        let a = new_task(&pool, "a", None).await;
+        for _ in 0..MAX_ATTEMPTS {
+            TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+            expire_all(&pool).await;
+        }
+        assert!(error_of(&pool, &a.id).await.unwrap().contains("租約逾時"));
+
+        let b = new_task(&pool, "b", None).await;
+        assert!(TaskService::cancel_task(&pool, &b.id).await.unwrap());
+        assert_eq!(error_of(&pool, &b.id).await.as_deref(), Some("已取消"));
+    }
+
+    #[tokio::test]
+    async fn agent_reported_error_fails_the_task_even_if_process_would_succeed() {
+        let pool = memory_pool().await;
+        let task = new_task(&pool, "a", None).await;
+        let claimed = TaskService::claim_task(&pool, "agy").await.unwrap().unwrap();
+        let (tx, _rx) = tokio::sync::broadcast::channel(8);
+
+        let line = r#"{"type":"result","is_error":true,"result":"rate limited"}"#;
+        agents::ingest_output(&pool, &tx, &task.id, "claude", line).await;
+
+        assert_eq!(status(&pool, &task.id).await, "failed");
+        assert!(error_of(&pool, &task.id).await.unwrap().contains("rate limited"));
+        // 之後 Runner 照程序結束碼回報完成，不能把它翻回 completed
+        assert!(
+            !TaskService::complete_task(&pool, &task.id, &claimed.lease_id)
+                .await
+                .unwrap()
+        );
+        assert_eq!(status(&pool, &task.id).await, "failed");
     }
 
     #[tokio::test]

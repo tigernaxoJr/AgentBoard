@@ -229,6 +229,14 @@ const logLevelClass = (level: string) =>
         <dd class="text-ink-2">{{ new Date(task.created_at).toLocaleString() }}</dd>
         <dt class="text-ink-3">領取次數</dt>
         <dd class="text-ink-2">{{ task.attempts }} / 3</dd>
+        <template v-if="task.status === 'failed' && task.error">
+          <dt class="text-ink-3">失敗原因</dt>
+          <dd class="text-rose-600 dark:text-rose-400 select-text whitespace-pre-wrap break-words">{{ task.error }}</dd>
+        </template>
+        <template v-if="task.status === 'queued' && task.not_before && new Date(task.not_before).getTime() > Date.now()">
+          <dt class="text-ink-3">重試等待</dt>
+          <dd class="text-amber-600 dark:text-amber-400">逾時後退避中，約 {{ new Date(task.not_before).toLocaleTimeString() }} 起可再領取</dd>
+        </template>
         <dt class="text-ink-3">心跳回報</dt>
         <dd class="flex items-center gap-1.5 text-ink-2">
           <Icon v-if="task.last_heartbeat_at" name="heart" :size="12" class="text-sky-500" />
